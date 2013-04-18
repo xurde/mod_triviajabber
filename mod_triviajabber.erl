@@ -55,6 +55,7 @@ start_link(Host, Opts) ->
   gen_server:start_link({local, Proc}, ?MODULE, [Host, Opts], []).
 
 start(Host, Opts) ->
+  ?WARNING_MSG("mod_triviapad, Opts ~p", [Opts]),
   player_store:init(),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
   ChildSpec =
@@ -440,10 +441,11 @@ check_player_in_game(Server, GameId, Player, Resource) ->
   case player_store:match_object({GameId, Player, '_'}) of
     [] ->
       player_store:insert(GameId, Player, Resource),
-      triviajabber_game:take_new_player(Server, GameId, Player, Resource)
+      triviajabber_game:take_new_player(Server, GameId),
       "ok";
     Res ->
-      ?WARNING_MSG("check_player_in_game ~p", [Res])
+      ?WARNING_MSG("check_player_in_game ~p", [Res]),
+      "joined"
   end.
 
   

@@ -19,7 +19,7 @@ close() ->
   dets:close(?MODULE).
 
 insert(Slug, Pid) ->
-  dets:insert(?MODULE, {Slug, Pid}).
+  dets:insert(?MODULE, {Slug, Pid}),
   {ok, Slug, Pid}.
 
 lookup(Slug) ->
