@@ -14,6 +14,11 @@
            float:left;
            margin:20px;
        }
+      .login {
+        width:30%;
+        float:left;
+        margin:20px;
+      }
       .log textarea{
            height:250px;
   	   width:100%;
@@ -21,7 +26,7 @@
     </style>
   </head>
   <body>
-    <dl>
+    <div><dl>
       <dt>JID</dt>
       <dt><input type="text" id="jid" value="phong1"></dt>
       <dt>Password</dt>
@@ -29,20 +34,29 @@
       <dt>
         <button type="button" id="signin">Sign in</button>
       </dt>
-    </dl>
+    </div></dl>
    
-    <dl>
-      <dt>Test 1: join in game</dt>
-      <dt>
+    <div class="login">
+      <div>Test1: join in game</div>
+      <div>
         <input type="text" id="gameid">
         <button type="button" id="joingame">join game Iq</button>
-      </dt>
-    </dl>
+      </div>
+    </div>
+    <div class="login">
+      <div>Test2: leave game</div>
+      <div>
+        <input type="text" id="leavegameid">
+        <button type="button" id="leavegame">leave game Iq</button>
+      </div>
+    </div>
     	
-    <dl>
-      <dt>Test 2: get list of games</dt>
-      <dt><button type="button" id="discoitems">disco#items Iq</button></dt>
-    </dl>
+    <div class="login">
+      <div>Test3: get list of games</div>
+      <div>
+      <button type="button" id="discoitems">disco#items Iq</button>
+      </div>
+    </div>
 
     <div class="log">
        <div>Request</div>

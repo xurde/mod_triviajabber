@@ -36,12 +36,12 @@
 %% Helpers
 
 -define(PROCNAME, ejabberd_mod_triviajabber).
--define(DEFAULT_MINPLAYERS, 1).
 -define(DEFAULT_GAME_SERVICE, "triviajabber").
 -define(DEFAULT_ROOM_SERVICE, "rooms").
 -define(JOIN_EVENT_NODE, "join_game").
+-define(LEAVE_EVENT_NODE, "leave_game").
 
--record(sixclicksstate, {host, route, minplayers = ?DEFAULT_MINPLAYERS}).
+-record(sixclicksstate, {host, route}).
 
 %%==============================================================
 %% API
@@ -55,7 +55,6 @@ start_link(Host, Opts) ->
   gen_server:start_link({local, Proc}, ?MODULE, [Host, Opts], []).
 
 start(Host, Opts) ->
-  ?WARNING_MSG("mod_triviapad, Opts ~p", [Opts]),
   player_store:init(),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
   ChildSpec =
@@ -107,19 +106,14 @@ remove_player_from_games(Jid) ->
 init([Host, Opts]) ->
   ServiceName = proplists:get_value(gameservice, Opts, ?DEFAULT_GAME_SERVICE),
   ?WARNING_MSG("Service name ~p, Host ~p", [ServiceName, Host]),
-  MinPlayers = gen_mod:get_opt(minplayers, Opts, ?DEFAULT_MINPLAYERS),
-  %%Route = ServiceName ++ ".@" ++ Host,
   Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ ".@HOST@"),
-  ?WARNING_MSG("init ~p, min ~p", [Route, MinPlayers]),
   ejabberd_hooks:add(sm_remove_connection_hook, Host,
                                ?MODULE, user_offline, 100),
   ejabberd_hooks:add(unset_presence_hook, Host,
                                ?MODULE, user_offline, 100),
 
   ejabberd_router:register_route(Route),
-  {ok, #sixclicksstate{host = Host, route = Route,
-                       minplayers = MinPlayers}
-  }.
+  {ok, #sixclicksstate{host = Host, route = Route}}.
 
 %%--------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) ->
@@ -291,22 +285,26 @@ handle_request(#adhoc_request{node = Command} = Request,
     },
   adhoc:produce_response(Request, #adhoc_response{status = completed, elements = [Result]}).
 
-send_initial_form(#adhoc_request{node = ?JOIN_EVENT_NODE} = Request) ->
-  Form =
-    {xmlelement, "x",
-     [{"xmlns", ?NS_XDATA},
-      {"type", "form"}],
-     [{xmlelement, "title", [], [{xmlcdata, "Enter game id"}]},
-      {xmlelement, "field",
-       [{"var", "game_id"},
-        {"type", "text-single"},
-        {"label", "Event id"}],
-       [{xmlelement, "required", [], []}]}
-     ]
-    },
-  adhoc:produce_response(Request,
-      #adhoc_response{status = executing,
-                      elements = [Form]}).
+send_initial_form(#adhoc_request{node = EventNode} = Request) ->
+ if
+  EventNode =:= ?JOIN_EVENT_NODE; EventNode =:= ?LEAVE_EVENT_NODE ->
+    Form =
+      {xmlelement, "x",
+          [{"xmlns", ?NS_XDATA}, {"type", "form"}],
+          [{xmlelement, "title", [], [{xmlcdata, "Enter game id"}]},
+              {xmlelement, "field",
+                  [{"var", "game_id"},
+                   {"type", "text-single"},
+                   {"label", "Event id"}],
+                  [{xmlelement, "required", [], []}]
+              }
+          ]
+      },
+    adhoc:produce_response(Request,
+      #adhoc_response{status = executing, elements = [Form]});
+  true ->
+    ok
+ end.
 
 %% disco#items iq
 iq_disco_items(From, To, IQ) ->
@@ -359,13 +357,14 @@ game_disco_items(Server, GameService) ->
 execute_command(?JOIN_EVENT_NODE, From, Options, #sixclicksstate{host = Server} = State) ->
   [GameId] = proplists:get_value("game_id", Options),
   ?WARNING_MSG("State ~p", [State]),
-  %% FIXME check game room in DB
+  %% check game room in DB
   try get_game_room(GameId, Server) of
     {selected, ["name", "slug"], []} ->
       {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
     {selected, ["name", "slug"], [{GameName, GameId}]} ->
       Player = From#jid.user,
       Resource = From#jid.resource,
+      %% then cache in player_store
       case check_player_in_game(Server, GameId, Player, Resource) of
         "ok" ->
           {[{"return", "true"}, {"desc", GameName}], "Find game to join"};
@@ -382,8 +381,20 @@ execute_command(?JOIN_EVENT_NODE, From, Options, #sixclicksstate{host = Server} 
     Res2:Desc2 ->
       ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2]),
       {[{"return", "false"}, {"desc", "null"}], "Exception when query game room"}
+  end;
+%% "Leave game" command
+execute_command(?LEAVE_EVENT_NODE, From, Options, _State) ->
+  [GameId] = proplists:get_value("game_id", Options),
+  Player = From#jid.user,
+  Resource = From#jid.resource,
+  %% check game room in cache (player_store)
+  case check_player_joined_game(GameId, Player, Resource) of
+    ok ->
+      {[{"return", "true"}, {"desc", GameId}], "You have left"};
+    notfound ->
+      {[{"return", "false"}, {"desc", "null"}], "You havent joined game room"}
   end.
-
+  
 %% Helpers
 get_game_room(GameId, Server) ->
   ejabberd_odbc:sql_query(
@@ -436,6 +447,8 @@ game_items(Items, GameService) ->
      }
   end, Items).
 
+%% One account can log in at many resources (devices),
+%% but don't allow them join in one game. They can play in diference room games.
 check_player_in_game(Server, GameId, Player, Resource) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_'}) of
@@ -447,7 +460,14 @@ check_player_in_game(Server, GameId, Player, Resource) ->
       ?WARNING_MSG("check_player_in_game ~p", [Res]),
       "joined"
   end.
-
-  
-
-
+%% Check if this player at this resouce has joined game room.
+check_player_joined_game(GameId, Player, Resource) ->
+  case player_store:match_object ({GameId, Player, Resource}) of
+    [{GameId, Player, Resource}] ->
+      player_store:match_delete({GameId, Player, Resource}),
+      triviajabber_game:remove_old_player(GameId),
+      ok;
+    Res ->
+      ?WARNING_MSG("~p ? not found ~p/~p in ~p", [Res, Player, Resource, GameId]),
+      notfound
+  end.

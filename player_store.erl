@@ -13,21 +13,20 @@
          match_delete/1, match_object/1]).
 
 init() ->
-  dets:open_file(?MODULE, [{ram_file, true}]).
+  ets:new(?MODULE, [public, named_table]).
 
 close() ->
-  dets:delete_all_objects(?MODULE),
-  dets:close(?MODULE).
+  ets:delete_all_objects(?MODULE).
 
 insert(Slug, Player, Resource) ->
-  dets:insert(?MODULE, {Slug, Player, Resource}),
+  ets:insert(?MODULE, {Slug, Player, Resource}),
   {ok, Slug, Player, Resource}.
 
 delete(Slug, Player, Resource) ->
-  dets:delete(?MODULE, {Slug, Player, Resource}).
+  ets:delete(?MODULE, {Slug, Player, Resource}).
 
 match_delete(Pattern) ->
-  dets:match_delete(?MODULE, Pattern).
+  ets:match_delete(?MODULE, Pattern).
 
 match_object(Pattern) ->
-  dets:match_object(?MODULE, Pattern).
+  ets:match_object(?MODULE, Pattern).

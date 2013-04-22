@@ -49,7 +49,12 @@ lissn.chat={
     
     $("#joingame").click(function(ev) {
       var gameid = $("#gameid").val();
-      lissn.chat.join_game_iq(gameid);
+      lissn.chat.join_game_iq(gameid, true);
+    });
+
+    $("#leavegame").click(function(ev) {
+      var gameid = $("#leavegameid").val();
+      lissn.chat.join_game_iq(gameid, false);
     });
 
     $("#discoitems").click(function(ev) {
@@ -77,6 +82,7 @@ lissn.chat={
       else if (status === Strophe.Status.DISCONNECTED || status===Strophe.Status.AUTHFAIL) {
 //        console.log("[fail to connect]");
           $(".response-log").text("[disconnect]");
+	lissn.chat.connection=null;
       }
     });
 
@@ -87,15 +93,23 @@ lissn.chat={
 
   disconnect:function() {
     lissn.chat.send_unavailable_presence();
+    lissn.chat.connection.sync=true;
+    lissn.chat.connection.flush();
     lissn.chat.connection.disconnect();
-    lissn.chat.connection=null;
+    //lissn.chat.connection=null;
   },
 
-  join_game_iq: function(game) {
+  join_game_iq: function(game, isJoin) {
+    var event_node = null;
+    if (isJoin) {
+      event_node = 'join_game';
+    } else {
+      event_node = 'leave_game';
+    }
     var command_id =lissn.chat.connection.getUniqueId("command");
     var command_attrs = {
         'xmlns': 'http://jabber.org/protocol/commands',
-        'node' : 'join_game',
+        'node' : event_node,
         'action' : 'execute'
     };
 
@@ -115,11 +129,11 @@ lissn.chat={
         var returniq = c.find('x item');
         var r = returniq.attr("return");
         var d = returniq.attr("desc");
-        lissn.chat.join_muc_callback_success=true;
+//        lissn.chat.join_game_callback_success=true;
       }
-      if(!lissn.chat.join_muc_callback_success){
-        lissn.chat.join_muc_callback_success=true;
-      }
+//      if(!lissn.chat.join_game_callback_success){
+//        lissn.chat.join_game_callback_success=true;
+//      }
       return true;
     };
     lissn.chat.connection.addHandler(command_callback, 'jabber:client', 'iq', 'result', command_id, null);
@@ -152,15 +166,14 @@ lissn.chat={
   send_available_presence: function() {
     var availablePresence = $pres()
             .c('show').t('chat').up()
-            .c('status').t('online').up()
-            .c('c', {xmlns: Strophe.NS.CAPS, hash: 'sha-1', node: 'http://lissn.com'});
+            .c('status').t('online');
     lissn.chat.connection.send(availablePresence);
   },
 
   send_unavailable_presence: function() {
-    var unavailablePresence = $pres()
-        .c('show').t('gone').up()
-        .c('status').t('unavailable');
+    var unavailablePresence = $pres({type:"unavailable"})
+	.c('show').t('gone');
+
     lissn.chat.connection.send(unavailablePresence);
   },
 
