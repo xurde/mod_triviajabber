@@ -27,9 +27,9 @@
 -record(gamestate, {host, minplayers = ?DEFAULT_MINPLAYERS}).
 
 start(Host, Opts) ->
-  ?WARNING_MSG("start game manager", []),
   triviajabber_store:init(),
   MinPlayers = gen_mod:get_opt(minplayers, Opts, ?DEFAULT_MINPLAYERS),
+  ?WARNING_MSG("start game manager, minplayers ~p", [MinPlayers]),
   {ok, #gamestate{host = Host, minplayers = MinPlayers}}.
   
 stop(Host) ->
@@ -108,9 +108,15 @@ take_new_player(Host, Slug) ->
 remove_old_player(Slug) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, Pid} ->
-      ?WARNING_MSG("<notify> process ~p: someone left ~p", [Pid, Slug]),
-      gen_server:cast(Pid, {left, Slug}),
-      ok;
+      case player_store:match_object({Slug, '_', '_'}) of
+        [] ->
+          ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
+          triviajabber_store:delete(Slug),
+          gen_server:call(Pid, stop);
+        Res ->
+          ?WARNING_MSG("async notify ~p", [Res]),
+          gen_server:cast(Pid, {left, Slug})
+      end;
     {null, not_found, not_found} ->
       ?ERROR_MSG("there no process to handle ~p", [Slug]),
       ok;

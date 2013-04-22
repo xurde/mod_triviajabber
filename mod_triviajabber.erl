@@ -200,7 +200,6 @@ do_route(To, From, Packet, State) ->
                         jlib:iq_to_xml(IQ#iq{type = result,
                                              sub_el = [IQRes]})
                     end,
-              ?WARNING_MSG("Roomfinder response:~p~n", [Res]),
               ejabberd_router:route(To, From, Res);
             #iq{} ->
               Err = jlib:make_error_reply(Packet,
@@ -311,7 +310,6 @@ iq_disco_items(From, To, IQ) ->
   Server = From#jid.server,
   GameService = To#jid.server,
   GamesList = game_disco_items(Server, GameService),
-  ?WARNING_MSG("Games List ~p", [GamesList]),
   Res = IQ#iq{type = result,
               sub_el = [{xmlelement, "query",
                         [{"xmlns", ?NS_DISCO_ITEMS}],
@@ -440,7 +438,6 @@ game_items(Items, GameService) ->
     Jid = Slug ++ "@" ++ GameService,
     PlayersList = player_store:match_object({Slug, '$1', '_'}),
     PlayersCount = erlang:length(PlayersList),
-    ?WARNING_MSG("slug ~p, questions ~p: Players ~p (~p)", [Slug, Questions, PlayersList, PlayersCount]),
     {xmlelement, "game",
       [{"name", Name}, {"jid", Jid}, {"topic", "test topic"}, {"question", "-1"}, {"questions", Questions}, {"players", erlang:integer_to_list(PlayersCount)}],
       []

@@ -12,18 +12,17 @@
 -export([init/0, close/0, insert/2, delete/1, lookup/1]).
 
 init() ->
-  dets:open_file(?MODULE, [{ram_file, true}]).
+  ets:new(?MODULE, [public, named_table]).
 
 close() ->
-  dets:delete_all_objects(?MODULE),
-  dets:close(?MODULE).
+  ets:delete_all_objects(?MODULE).
 
 insert(Slug, Pid) ->
-  dets:insert(?MODULE, {Slug, Pid}),
+  ets:insert(?MODULE, {Slug, Pid}),
   {ok, Slug, Pid}.
 
 lookup(Slug) ->
-  case dets:lookup(?MODULE, Slug) of
+  case ets:lookup(?MODULE, Slug) of
     [{Slug, Pid}] ->
       {ok, Slug, Pid};
     [] ->
@@ -33,5 +32,5 @@ lookup(Slug) ->
   end.
 
 delete(Slug) ->
-    dets:delete(?MODULE, Slug).
+  ets:delete(?MODULE, Slug).
 
