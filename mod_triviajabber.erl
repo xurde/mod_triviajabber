@@ -12,8 +12,8 @@
 -behaviour(gen_server).
 -behaviour(gen_mod).
 
-%% API
--export([start_link/2, start/2, stop/1]).
+%% gen_mod callbacks
+-export([start/2, stop/1]).
 
 %% Hooks
 -export([user_offline/3, user_offline/4]).
@@ -22,11 +22,9 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
-%% helper
-%%-export([remove_player_from_games/1]).
-
-%% spawn
--export([iq_disco_items/3]).
+%% helpers
+-export([iq_disco_items/3,
+         start_link/2]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -36,12 +34,13 @@
 %% Helpers
 
 -define(PROCNAME, ejabberd_mod_triviajabber).
+-define(DEFAULT_MINPLAYERS, 1).
 -define(DEFAULT_GAME_SERVICE, "triviajabber").
 -define(DEFAULT_ROOM_SERVICE, "rooms").
 -define(JOIN_EVENT_NODE, "join_game").
 -define(LEAVE_EVENT_NODE, "leave_game").
 
--record(sixclicksstate, {host, route}).
+-record(sixclicksstate, {host, route, minplayers = ?DEFAULT_MINPLAYERS}).
 
 %%==============================================================
 %% API
@@ -56,6 +55,7 @@ start_link(Host, Opts) ->
 
 start(Host, Opts) ->
   player_store:init(),
+  triviajabber_store:init(),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
   ChildSpec =
     {Proc,
@@ -67,26 +67,24 @@ start(Host, Opts) ->
   supervisor:start_child(ejabberd_sup, ChildSpec).
 
 stop(Host) ->
+  triviajabber_store:close(),
   player_store:close(),
   ejabberd_hooks:delete(sm_remove_connection_hook, Host,
       ?MODULE, user_offline, 100),
   ejabberd_hooks:delete(unset_presence_hook, Host,
       ?MODULE, user_offline, 100),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
-  ?DEBUG("Stopping server ~p~n", [Proc]),
   gen_server:call(Proc, stop),
   supervisor:delete_child(ejabberd_sup, Proc).
 
 %% "unavailable" hook
 user_offline(_Sid, Jid, _SessionInfo) ->
-  ?DEBUG("~p has gone offline", [Jid]),
   remove_player_from_games(Jid).
 
 user_offline(User, Server, Resource, _Status) ->
   Jid = jlib:make_jid(User, Server, Resource),
   remove_player_from_games(Jid).
 
-%% FIXME
 remove_player_from_games(Jid) ->
   User = Jid#jid.user,
   Res = Jid#jid.resource,
@@ -105,7 +103,8 @@ remove_player_from_games(Jid) ->
 %%--------------------------------------------------------------
 init([Host, Opts]) ->
   ServiceName = proplists:get_value(gameservice, Opts, ?DEFAULT_GAME_SERVICE),
-  ?WARNING_MSG("Service name ~p, Host ~p", [ServiceName, Host]),
+  MinPlayers = proplists:get_value(minplayers, Opts, ?DEFAULT_MINPLAYERS),
+  ?WARNING_MSG("Service name ~p, Host ~p, Min ~p", [ServiceName, Host, MinPlayers]),
   Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ ".@HOST@"),
   ejabberd_hooks:add(sm_remove_connection_hook, Host,
                                ?MODULE, user_offline, 100),
@@ -113,7 +112,11 @@ init([Host, Opts]) ->
                                ?MODULE, user_offline, 100),
 
   ejabberd_router:register_route(Route),
-  {ok, #sixclicksstate{host = Host, route = Route}}.
+  {ok, #sixclicksstate{
+      host = Host,
+      route = Route,
+      minplayers = MinPlayers}
+  }.
 
 %%--------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) ->
@@ -148,7 +151,7 @@ handle_cast(Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------
 handle_info({route, From, To, {xmlelement, _Type, _Attr, _Els} = Packet}, State) ->
-  ?WARNING_MSG("handle_info ~p: ~p~n", [From, Packet]),
+  %%?WARNING_MSG("handle_info ~p: ~p~n", [From, Packet]),
   case catch do_route(To, From, Packet, State) of
     {'EXIT', Reason} -> ?ERROR_MSG("~p", [Reason]);
     _ -> ok
@@ -185,7 +188,6 @@ do_route(To, From, Packet, State) ->
   {xmlelement, Name, Attrs, _Els} = Packet,
   case To of
     #jid{luser = "", lresource = ""} ->
-      ?WARNING_MSG("[empty To] Name ~p, Attrs ~p", [Name, Attrs]),
       case Name of
         "iq" ->
           case jlib:iq_query_info(Packet) of
@@ -270,15 +272,12 @@ adhoc_request(_From, _To, Other, _State) ->
 handle_request(#adhoc_request{node = Command} = Request,
     From, _SixClicks, Options, State) ->
   {Items, Message} = execute_command(Command, From, Options, State),
-  ?WARNING_MSG("Items ~p, Message ~p", [Items, Message]),
   Result =
     {xmlelement, "x",
       [{"xmlns", ?NS_XDATA}, {"type", "result"}],
       [{xmlelement, "title", [], [{xmlcdata, Message}]},
-       {xmlelement,"item", Items, [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
-%%         [{xmlelement,"field",
-%%          [{"var","status"}],
-%%          [{xmlelement,"value", [], [{xmlcdata, "done"}]}]}]
+       {xmlelement,"item", Items,
+            [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
        }
       ]
     },
@@ -337,7 +336,6 @@ game_disco_items(Server, GameService) ->
         "questions_per_game", "slug"], GameList}
         when erlang:is_list(GameList) ->
       {Trial, Regular, Official} = filter_games(GameList, {[], [], []}),
-      ?WARNING_MSG("trial ~p\n regular ~p\n official ~p", [Trial, Regular, Official]),
       OfficGames = add_games(GameService, "Official", Official, []),
       RegulGames = add_games(GameService, "Regular", Regular, OfficGames),
       TrialGames = add_games(GameService, "Trial", Trial, RegulGames),
@@ -352,7 +350,8 @@ game_disco_items(Server, GameService) ->
   end.
 
 %% "Join game" command
-execute_command(?JOIN_EVENT_NODE, From, Options, #sixclicksstate{host = Server} = State) ->
+execute_command(?JOIN_EVENT_NODE, From, Options,
+    #sixclicksstate{host = Server, minplayers = MinPlayers} = State) ->
   [GameId] = proplists:get_value("game_id", Options),
   ?WARNING_MSG("State ~p", [State]),
   %% check game room in DB
@@ -363,7 +362,7 @@ execute_command(?JOIN_EVENT_NODE, From, Options, #sixclicksstate{host = Server} 
       Player = From#jid.user,
       Resource = From#jid.resource,
       %% then cache in player_store
-      case check_player_in_game(Server, GameId, Player, Resource) of
+      case check_player_in_game(Server, MinPlayers, GameId, Player, Resource) of
         "ok" ->
           {[{"return", "true"}, {"desc", GameName}], "Find game to join"};
         Err ->
@@ -446,12 +445,12 @@ game_items(Items, GameService) ->
 
 %% One account can log in at many resources (devices),
 %% but don't allow them join in one game. They can play in diference room games.
-check_player_in_game(Server, GameId, Player, Resource) ->
+check_player_in_game(Server, MinPlayers, GameId, Player, Resource) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_'}) of
     [] ->
       player_store:insert(GameId, Player, Resource),
-      triviajabber_game:take_new_player(Server, GameId),
+      triviajabber_game:take_new_player(Server, GameId, MinPlayers),
       "ok";
     Res ->
       ?WARNING_MSG("check_player_in_game ~p", [Res]),

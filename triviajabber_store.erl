@@ -15,7 +15,8 @@ init() ->
   ets:new(?MODULE, [public, named_table]).
 
 close() ->
-  ets:delete_all_objects(?MODULE).
+  ets:delete_all_objects(?MODULE),
+  ets:delete(?MODULE).
 
 insert(Slug, Pid) ->
   ets:insert(?MODULE, {Slug, Pid}),

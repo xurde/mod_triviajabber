@@ -9,43 +9,56 @@
 -module(triviajabber_game).
 -author('od06@htklabs.com').
 
--behavior(gen_mod).
 -behavior(gen_server).
 
 %% API
--export([start/2, stop/1, start_link/2]).
+-export([start_link/2]).
+%% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
-
--export([take_new_player/2, remove_old_player/1]).
+%% helpers
+-export([take_new_player/3, remove_old_player/1]).
 
 -include("ejabberd.hrl").
 
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
+-define(READY, "no").
 
--record(gamestate, {host, minplayers = ?DEFAULT_MINPLAYERS}).
+-record(gamestate, {host, slug, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 
-start(Host, Opts) ->
-  triviajabber_store:init(),
-  MinPlayers = gen_mod:get_opt(minplayers, Opts, ?DEFAULT_MINPLAYERS),
-  ?WARNING_MSG("start game manager, minplayers ~p", [MinPlayers]),
-  {ok, #gamestate{host = Host, minplayers = MinPlayers}}.
-  
-stop(Host) ->
-  ?WARNING_MSG("stop game manager", []),
-  triviajabber_store:close(),
-  Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
-  gen_server:call(Proc, stop),
-  supervisor:delete_child(ejabberd_sup, Proc).
-
-handle_cast({joined, Slug}, State) ->
-  ?WARNING_MSG("~p child knows [incoming] -> ~p, state ~p", [self(), Slug, State]),
-  {noreply, State};
+handle_cast({joined, Slug},
+    #gamestate{
+        host = Host,
+        slug = Slug,
+        started = Started,
+        minplayers = MinPlayers} = State) ->
+  ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p", [self(), Slug, MinPlayers]),
+  case Started of
+    "no" ->
+       List = player_store:match_object({Slug, '_', '_'}),
+       ?WARNING_MSG("~p hasnt started, ~p", [Slug, List]),
+       if
+         erlang:length(List) >= MinPlayers ->
+           ?WARNING_MSG("new commer fills enough players to start game", []),
+           NewState = #gamestate{
+               host = Host,
+               slug = Slug,
+               started = "yes", minplayers = MinPlayers},
+           {noreply, NewState};
+         true ->
+           ?WARNING_MSG("still not enough players to start game", []),
+           {noreply, State}
+       end;
+    Yes ->  
+      ?WARNING_MSG("has game ~p started ? ~p", [Slug, Yes]),
+      {noreply, State}
+  end;
 handle_cast({left, Slug}, State) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p, state ~p", [self(), Slug, State]),
   {noreply, State};
-handle_cast(_Msg, State) ->
+handle_cast(Msg, State) ->
+  ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
 
 handle_call(stop, _From, State) ->
@@ -61,47 +74,50 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-start_child(Host, Slug) ->
-  Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
-  ChildSpec =
-    {Proc,
-     {?MODULE, start_link, [Host, [{slug, Slug}]]},
-     temporary,
-     1000,
-     worker,
-     [?MODULE]},
-  supervisor:start_child(ejabberd_sup, ChildSpec).
-
 start_link(Host, Opts) ->
-  ?WARNING_MSG("start_child -> start_link ~p, ~p", [Host, Opts]),
-  Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+  Slug = gen_mod:get_opt(slug, Opts, ""),
+  %% each child has each process name ejabberd_triviapad_game_<Slug>
+  Proc = gen_mod:get_module_proc(Slug, ?PROCNAME),
   gen_server:start_link({local, Proc}, ?MODULE, [Host, Opts], []).
 
 init([Host, Opts]) ->
   Slug = gen_mod:get_opt(slug, Opts, ""),
-  ?WARNING_MSG("child in ~p processes ~p", [Host, Slug]),
-  {ok, self()}.
+  MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
+  ?WARNING_MSG("@@@@@@@@ child ~p processes {~p, ~p}", [self(), Slug, MinPlayers]),
+  Started = if
+    MinPlayers =:= 1 -> "yes";
+    true -> "no"
+  end,
+  {ok, #gamestate{
+      host = Host,
+      slug = Slug,
+      minplayers = MinPlayers,
+      started = Started}
+  }.
 
-%% ------------------------------------
-%% Game manager is notified when
-%% player has joined/left.
-%% ------------------------------------
+%%% ------------------------------------
+%%% Game manager is notified when
+%%% player has joined/left.
+%%% ------------------------------------
 
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
-take_new_player(Host, Slug) ->
+take_new_player(Host, Slug, MinPlayers) ->
+  ?WARNING_MSG("A. take_new_player(~p, ~p)", [Slug, MinPlayers]),
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, Pid} ->
-      ?WARNING_MSG("<notify> process ~p: someone joined  ~p", [Pid, Slug]),
+      ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
       gen_server:cast(Pid, {joined, Slug}),
       ok;
     {null, not_found, not_found} ->
-      {ok, Pid} = start_child(Host, Slug),
+      ?WARNING_MSG("C1. take_new_player, new slug (~p, ~p)", [Slug, MinPlayers]),
+      Opts = [{slug, Slug}, {minplayers, MinPlayers}],
+      {ok, Pid} = start_link(Host, Opts),
+      ?WARNING_MSG("C2. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, Pid),
-      ?WARNING_MSG("new process ~p handles ~p", [Pid, Slug]),
       ok;
     Error ->
-      ?ERROR_MSG("[player joined] lookup : ~p", [Error])  
+      ?ERROR_MSG("D. [player joined] lookup : ~p", [Error])  
   end.
 %% Old player joined game room (slug),
 %% After he requested, he has left.
@@ -123,3 +139,9 @@ remove_old_player(Slug) ->
     Error ->
       ?ERROR_MSG("[player left] lookup : ~p", [Error])
   end.
+
+%%% ------------------------------------
+%%% Child handles a game
+%%% ------------------------------------
+
+

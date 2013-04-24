@@ -13,10 +13,11 @@
          match_delete/1, match_object/1]).
 
 init() ->
-  ets:new(?MODULE, [public, named_table]).
+  ets:new(?MODULE, [bag, public, named_table]).
 
 close() ->
-  ets:delete_all_objects(?MODULE).
+  ets:delete_all_objects(?MODULE),
+  ets:delete(?MODULE).
 
 insert(Slug, Player, Resource) ->
   ets:insert(?MODULE, {Slug, Player, Resource}),
