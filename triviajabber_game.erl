@@ -17,7 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 %% helpers
--export([take_new_player/3, remove_old_player/1]).
+-export([take_new_player/4, remove_old_player/1]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -27,14 +27,15 @@
 -define(READY, "no").
 -define(COUNTDOWN, 3000).
 
--record(gamestate, {host, slug, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
+-record(gamestate, {host, slug, pool_id, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
-handle_cast({joined, Slug},
+handle_cast({joined, Slug, PoolId},
     #gamestate{
         host = Host,
         slug = Slug,
+        pool_id = PoolId,
         started = Started,
         minplayers = MinPlayers} = State) ->
   ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p", [self(), Slug, MinPlayers]),
@@ -49,6 +50,7 @@ handle_cast({joined, Slug},
            NewState = #gamestate{
                host = Host,
                slug = Slug,
+               pool_id = PoolId,
                started = "yes", minplayers = MinPlayers},
            {noreply, NewState};
          true ->
@@ -71,7 +73,9 @@ handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
   {stop, normal, ok, State}.
 
-handle_info(question, #gamestate{slug = Slug} = State) ->
+handle_info(countdown, #gamestate{
+    host = Host, slug = Slug, pool_id = PoolId} = State) ->
+  %% TODO: QuestionIds = question_ids(Host, PoolId),
   List = player_store:match_object({Slug, '_', '_'}),
   lists:foreach(
     fun({XSlug, Player, Resource}) ->
@@ -98,7 +102,8 @@ start_link(Host, Opts) ->
 init([Host, Opts]) ->
   Slug = gen_mod:get_opt(slug, Opts, ""),
   MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
-  ?WARNING_MSG("@@@@@@@@ child ~p processes {~p, ~p}", [self(), Slug, MinPlayers]),
+  PoolId = gen_mod:get_opt(pool_id, Opts, 1),
+  ?WARNING_MSG("@@@@@@@@ child ~p processes {~p, ~p, ~p}", [self(), Slug, MinPlayers, PoolId]),
   Started = if
     MinPlayers =:= 1 ->
       will_send_question(Host, Slug),
@@ -109,6 +114,7 @@ init([Host, Opts]) ->
   {ok, #gamestate{
       host = Host,
       slug = Slug,
+      pool_id = PoolId,
       minplayers = MinPlayers,
       started = Started}
   }.
@@ -120,17 +126,17 @@ init([Host, Opts]) ->
 
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
-take_new_player(Host, Slug, MinPlayers) ->
+take_new_player(Host, Slug, PoolId, MinPlayers) ->
   case triviajabber_store:lookup(Slug) of
-    {ok, Slug, Pid} ->
+    {ok, Slug, PoolId, Pid} ->
       ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
-      gen_server:cast(Pid, {joined, Slug}),
+      gen_server:cast(Pid, {joined, Slug, PoolId}),
       ok;
-    {null, not_found, not_found} ->
-      Opts = [{slug, Slug}, {minplayers, MinPlayers}],
+    {null, not_found, not_found, not_found} ->
+      Opts = [{slug, Slug}, {pool_id, PoolId}, {minplayers, MinPlayers}],
       {ok, Pid} = start_link(Host, Opts),
       ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
-      triviajabber_store:insert(Slug, Pid),
+      triviajabber_store:insert(Slug, PoolId, Pid),
       ok;
     Error ->
       ?ERROR_MSG("D. [player joined] lookup : ~p", [Error])  
@@ -139,7 +145,7 @@ take_new_player(Host, Slug, MinPlayers) ->
 %% After he requested, he has left.
 remove_old_player(Slug) ->
   case triviajabber_store:lookup(Slug) of
-    {ok, Slug, Pid} ->
+    {ok, Slug, PoolId, Pid} ->
       case player_store:match_object({Slug, '_', '_'}) of
         [] ->
           ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
@@ -148,7 +154,7 @@ remove_old_player(Slug) ->
           ?WARNING_MSG("async notify ~p", [Res]),
           gen_server:cast(Pid, {left, Slug})
       end;
-    {null, not_found, not_found} ->
+    {null, not_found, not_found, not_found} ->
       ?ERROR_MSG("there no process to handle ~p", [Slug]),
       ok;
     Error ->
@@ -169,7 +175,7 @@ will_send_question(Server, XSlug) ->
       send_countdown_msg(From, To, "3 seconds")
     end,
   List),
-  erlang:send_after(?COUNTDOWN, self(), question),
+  erlang:send_after(?COUNTDOWN, self(), countdown),
   ok.
 
 send_countdown_msg(From, To, Txt) ->
@@ -180,4 +186,16 @@ send_countdown_msg(From, To, Txt) ->
      [{xmlelement, "countdown", [], [{xmlcdata, Txt}]}]
   },
   ejabberd_router:route(From, To, Packet).
+
+question_ids(Server, PoolId) ->
+  CountQuestionIds = ejabberd_odbc:sql_query(Server,
+    ["select count(question_id) from sixclicks_questions "
+       "where pool_id='", PoolId, "'"]),
+  case CountQuestionIds of
+    {selected, ["count(question_id)"], [{Count}} ->
+      %% TODO: select question_id from sixclicks_questions where pool_id=PoolId order by RAND() limit Count;
+      %% Count must be converted to int
+    Ret ->
+      []
+  end. 
   

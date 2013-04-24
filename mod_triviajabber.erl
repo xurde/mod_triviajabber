@@ -356,13 +356,13 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
   ?WARNING_MSG("State ~p", [State]),
   %% check game room in DB
   try get_game_room(GameId, Server) of
-    {selected, ["name", "slug"], []} ->
+    {selected, ["name", "slug", "pool_id"], []} ->
       {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
-    {selected, ["name", "slug"], [{GameName, GameId}]} ->
+    {selected, ["name", "slug", "pool_id"], [{GameName, GameId, GamePool}]} ->
       Player = From#jid.user,
       Resource = From#jid.resource,
       %% then cache in player_store
-      case check_player_in_game(Server, MinPlayers, GameId, Player, Resource) of
+      case check_player_in_game(Server, MinPlayers, GameId, GamePool, Player, Resource) of
         "ok" ->
           {[{"return", "true"}, {"desc", GameName}], "Find game to join"};
         Err ->
@@ -396,7 +396,7 @@ execute_command(?LEAVE_EVENT_NODE, From, Options, _State) ->
 get_game_room(GameId, Server) ->
   ejabberd_odbc:sql_query(
       Server,
-      ["select name, slug from sixclicks_rooms "
+      ["select name, slug, pool_id from sixclicks_rooms "
        "where slug='", GameId, "'"]
   ).
 
@@ -445,12 +445,12 @@ game_items(Items, GameService) ->
 
 %% One account can log in at many resources (devices),
 %% but don't allow them join in one game. They can play in diference room games.
-check_player_in_game(Server, MinPlayers, GameId, Player, Resource) ->
+check_player_in_game(Server, MinPlayers, GameId, GamePool, Player, Resource) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_'}) of
     [] ->
       player_store:insert(GameId, Player, Resource),
-      triviajabber_game:take_new_player(Server, GameId, MinPlayers),
+      triviajabber_game:take_new_player(Server, GameId, GamePool, MinPlayers),
       "ok";
     Res ->
       ?WARNING_MSG("check_player_in_game ~p", [Res]),
