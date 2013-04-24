@@ -20,13 +20,17 @@
 -export([take_new_player/3, remove_old_player/1]).
 
 -include("ejabberd.hrl").
+-include("jlib.hrl").
 
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
 -define(READY, "no").
+-define(COUNTDOWN, 3000).
 
 -record(gamestate, {host, slug, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 
+%% when new player has joined game room,
+%% check if there are enough players to start
 handle_cast({joined, Slug},
     #gamestate{
         host = Host,
@@ -41,6 +45,7 @@ handle_cast({joined, Slug},
        if
          erlang:length(List) >= MinPlayers ->
            ?WARNING_MSG("new commer fills enough players to start game", []),
+           will_send_question(Host, Slug),
            NewState = #gamestate{
                host = Host,
                slug = Slug,
@@ -54,17 +59,27 @@ handle_cast({joined, Slug},
       ?WARNING_MSG("has game ~p started ? ~p", [Slug, Yes]),
       {noreply, State}
   end;
+%% when one player has left
 handle_cast({left, Slug}, State) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p, state ~p", [self(), Slug, State]),
   {noreply, State};
 handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
-
+%% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
   {stop, normal, ok, State}.
 
+handle_info(question, #gamestate{slug = Slug} = State) ->
+  List = player_store:match_object({Slug, '_', '_'}),
+  lists:foreach(
+    fun({XSlug, Player, Resource}) ->
+      ?WARNING_MSG("<~p> first question to ~p/~p", [XSlug, Player, Resource])
+      
+    end,
+  List),
+  {noreply, State};
 handle_info(_Info, State) ->
   {noreply, State}.
 
@@ -85,8 +100,11 @@ init([Host, Opts]) ->
   MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
   ?WARNING_MSG("@@@@@@@@ child ~p processes {~p, ~p}", [self(), Slug, MinPlayers]),
   Started = if
-    MinPlayers =:= 1 -> "yes";
-    true -> "no"
+    MinPlayers =:= 1 ->
+      will_send_question(Host, Slug),
+      "yes";
+    true ->
+     "no"
   end,
   {ok, #gamestate{
       host = Host,
@@ -103,17 +121,15 @@ init([Host, Opts]) ->
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
 take_new_player(Host, Slug, MinPlayers) ->
-  ?WARNING_MSG("A. take_new_player(~p, ~p)", [Slug, MinPlayers]),
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, Pid} ->
       ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
       gen_server:cast(Pid, {joined, Slug}),
       ok;
     {null, not_found, not_found} ->
-      ?WARNING_MSG("C1. take_new_player, new slug (~p, ~p)", [Slug, MinPlayers]),
       Opts = [{slug, Slug}, {minplayers, MinPlayers}],
       {ok, Pid} = start_link(Host, Opts),
-      ?WARNING_MSG("C2. new process ~p handles ~p", [Pid, Opts]),
+      ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, Pid),
       ok;
     Error ->
@@ -127,7 +143,6 @@ remove_old_player(Slug) ->
       case player_store:match_object({Slug, '_', '_'}) of
         [] ->
           ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
-          triviajabber_store:delete(Slug),
           gen_server:call(Pid, stop);
         Res ->
           ?WARNING_MSG("async notify ~p", [Res]),
@@ -144,4 +159,25 @@ remove_old_player(Slug) ->
 %%% Child handles a game
 %%% ------------------------------------
 
+will_send_question(Server, XSlug) ->
+  List = player_store:match_object({XSlug, '_', '_'}),
+  lists:foreach(
+    fun({Slug, Player, Resource}) ->
+      To = jlib:make_jid(Player, Server, Resource),
+      GameServer = "triviajabber." ++ Server,
+      From = jlib:make_jid(Slug, GameServer, ""),
+      send_countdown_msg(From, To, "3 seconds")
+    end,
+  List),
+  erlang:send_after(?COUNTDOWN, self(), question),
+  ok.
 
+send_countdown_msg(From, To, Txt) ->
+  Packet = {xmlelement, "message",
+%      [{"type", ?MODULE}, {"id", randoms:get_string()}],
+%      [{xmlelement, "countdown", [], [{xmlcdata, Txt}]}]
+     [{"type", "chat"}, {"id", randoms:get_string()}],
+     [{xmlelement, "countdown", [], [{xmlcdata, Txt}]}]
+  },
+  ejabberd_router:route(From, To, Packet).
+  
