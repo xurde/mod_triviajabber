@@ -27,7 +27,8 @@
 -define(READY, "no").
 -define(COUNTDOWN, 3000).
 
--record(gamestate, {host, slug, pool_id, questions, seconds, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
+-record(gamestate, {host, slug, pool_id, questions, seconds,
+    minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
@@ -71,7 +72,7 @@ handle_cast(Msg, State) ->
 %% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
-  {stop, normal, ok, State}.
+  {stop, normal, State}.
 
 handle_info(countdown, #gamestate{
     host = Host, slug = Slug,
@@ -79,13 +80,33 @@ handle_info(countdown, #gamestate{
     pool_id = PoolId} = State) ->
   QuestionIds = question_ids(Host, PoolId, Questions),
   ?WARNING_MSG("from ~p (~p), list ~p", [Slug, Questions, QuestionIds]),
-  List = player_store:match_object({Slug, '_', '_'}),
-  lists:foreach(
-    fun({XSlug, Player, Resource}) ->
-      ?WARNING_MSG("<~p> first question to ~p/~p", [XSlug, Player, Resource])
-      
-    end,
-  List),
+  case QuestionIds of
+    [] ->
+      ?ERROR_MSG("~p (~p) has no question after returning permutation",
+          [Slug, PoolId]),
+      {stop, error, State};
+    [{UniqueQuestion}] ->
+      send_question(Host, Slug, UniqueQuestion, Seconds);
+    [{Head}|Tail] ->
+      send_question(Host, Slug, Head, Seconds),
+      erlang:send_after(Seconds * 1000, self(), {questionslist, Tail}),
+      {noreply, State}
+  end;
+handle_info({questionslist, QuestionIds}, #gamestate{
+    host = Host, slug = Slug,
+    questions = Questions, seconds = Seconds,
+    pool_id = PoolId} = State) ->
+  case QuestionIds of
+    [] ->
+      %% TODO: cannot happen, however we handle when
+      %% all questions were be sent
+      ok;
+    [{LastQuestion}] ->
+      send_question(Host, Slug, LastQuestion, Seconds);
+    [{Head}|Tail] ->
+      send_question(Host, Slug, Head, Seconds),
+      erlang:send_after(Seconds * 1000, self(), {questionslist, Tail}),
+  end,
   {noreply, State};
 handle_info(_Info, State) ->
   {noreply, State}.
@@ -173,27 +194,75 @@ remove_old_player(Slug) ->
 %%% Child handles a game
 %%% ------------------------------------
 
-will_send_question(Server, XSlug) ->
-  List = player_store:match_object({XSlug, '_', '_'}),
+%% send countdown chat message when there are enough players
+will_send_question(Server, Slug) ->
+  CountdownPacket = {xmlelement, "message",
+     [{"type", "chat"}, {"id", randoms:get_string()}],
+     [{xmlelement, "countdown", [], [{xmlcdata, "3 seconds"}]}]
+  },
+  List = player_store:match_object({Slug, '_', '_'}),
   lists:foreach(
-    fun({Slug, Player, Resource}) ->
+    fun({_, Player, Resource}) ->
       To = jlib:make_jid(Player, Server, Resource),
       GameServer = "triviajabber." ++ Server,
-      From = jlib:make_jid(Slug, GameServer, ""),
-      send_countdown_msg(From, To, "3 seconds")
+      From = jlib:make_jid(Slug, GameServer, Slug),
+      ejabberd_router:route(From, To, CountdownPacket)
     end,
   List),
   erlang:send_after(?COUNTDOWN, self(), countdown),
   ok.
 
-send_countdown_msg(From, To, Txt) ->
-  Packet = {xmlelement, "message",
-%      [{"type", ?MODULE}, {"id", randoms:get_string()}],
-%      [{xmlelement, "countdown", [], [{xmlcdata, Txt}]}]
-     [{"type", "chat"}, {"id", randoms:get_string()}],
-     [{xmlelement, "countdown", [], [{xmlcdata, Txt}]}]
-  },
-  ejabberd_router:route(From, To, Packet).
+generate_opt_list([], Ret, _) ->
+  Ret;
+generate_opt_list([Head|Tail], Ret, Count) ->
+  CountStr = erlang:integer_to_list(Count),
+  AddOne = {xmlelement, "answer",
+      [{"id", CountStr}],
+      [{xmlcdata, Head}]},
+  generate_opt_list(Tail, [AddOne|Ret], Count+1).
+
+%% send question to all player in slug
+send_question(Server, Slug, QuestionId, Seconds) ->
+  case get_question_info(Server, QuestionId) of
+    {ok, Qst, QLst} ->
+      MsgId = Slug ++ randoms:get_string(),
+      OptList = generate_opt_list(QLst, [], 1),
+%  QuestionPacket = {xmlelement, "message",
+%      [{"type", "question"}, {"id", MsgId}],
+%      [{xmlelement, "question",
+%          [{"time", Seconds}],
+%          [{xmlcdata, "What color was Santiago’s white horse?"}]
+%       },
+%       {xmlelement, "answers",
+%          [],
+%          [
+%           {xmlelement, "option", [{"id", "1"}], [{xmlcdata, "White"}]},
+%           {xmlelement, "option", [{"id", "2"}], [{xmlcdata, "Black"}]},
+%           {xmlelement, "option", [{"id", "3"}], [{xmlcdata, "White with black dots"}]}
+%          ]
+%       }
+%      ]
+%  },
+      QuestionPacket = {xmlelement, "message",
+        [{"type", "question"}, {"id", MsgId}],
+        [{xmlelement, "question",
+            [{"time", Seconds}], [{xmlcdata, Qst}]
+         },
+         {xmlelement, "answers",
+            [], [OptList]
+         }
+        ]
+      },
+      List = player_store:match_object({Slug, '_', '_'}),
+      lists:foreach(fun({_, Player, Resource}) ->
+        To = jlib:make_jid(Player, Server, Resource),
+        GameServer = "triviajabber." ++ Server,
+        From = jlib:make_jid(Slug, GameServer, Slug),
+        ejabberd_router:route(From, To, QuestionPacket)
+      end, List);
+    _ ->
+      error
+  end.
 
 %% get permutation of question_id from pool
 question_ids(Server, PoolId, Questions) ->
@@ -206,17 +275,43 @@ question_ids(Server, PoolId, Questions) ->
         {selected, ["question_id"], []} ->
           ?ERROR_MSG("pool_id ~p has no question", [PoolId]),
           [];
-        {selected, ["question_id"], QuestionsList} when erlang:is_list(QuestionsList) ->
+        {selected, ["question_id"], QuestionsList}
+            when erlang:is_list(QuestionsList) ->
           QuestionsList;
         Error ->
-          ?ERROR_MSG("pool_id ~p failed to generate ~p questions: ~p", [PoolId, Questions, Error]),
+          ?ERROR_MSG("pool_id ~p failed to generate ~p questions: ~p",
+              [PoolId, Questions, Error]),
           []
       catch
         Res2:Desc2 ->
-          ?ERROR_MSG("Exception when random question_id from pool: ~p, ~p", [Res2, Desc2]),
+          ?ERROR_MSG("Exception when random question_id from pool: ~p, ~p",
+              [Res2, Desc2]),
           []
       end;
     true ->
       []
   end.
-
+%% get question info by question_id,
+%% permutate options to sent to players
+get_question_info(Server, QuestionId) ->
+  Query =
+  try ejabberd_odbc:sql_query(Server,
+      ["select question, answer, option1, option2, option3 "
+       "from sixclicks_questions where question_id='", QuestionId, "'"]) of
+    {selected, ["question", "answer", "option1", "option2", "option3"],
+        []} ->
+      ?ERROR_MSG("Query question info: Empty", []),
+      empty;
+    {selected, ["question", "answer", "option1", "option2", "option3"],
+        [{Q, A, O1, O2, O3}]} ->
+      List = permutation:permute([A, O1, O2, O3]),
+      {ok, Q, List};
+    Res ->
+      ?ERROR_MSG("Query question ~p failed: ~p", [QuestionId, Res]),
+      error
+  catch
+    Res2:Desc2 ->
+      ?ERROR_MSG("Exception when get question info ~p",
+          [QuestionId]),
+      error
+  end.

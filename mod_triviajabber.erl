@@ -358,7 +358,8 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
   try get_game_room(GameId, Server) of
     {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], []} ->
       {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
-    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], [{GameName, GameId, GamePool, GameQuestions, GameSeconds}]} ->
+    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"],
+               [{GameName, GameId, GamePool, GameQuestions, GameSeconds}]} ->
       Player = From#jid.user,
       Resource = From#jid.resource,
       %% then cache in player_store
