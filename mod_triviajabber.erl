@@ -356,13 +356,14 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
   ?WARNING_MSG("State ~p", [State]),
   %% check game room in DB
   try get_game_room(GameId, Server) of
-    {selected, ["name", "slug", "pool_id"], []} ->
+    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], []} ->
       {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
-    {selected, ["name", "slug", "pool_id"], [{GameName, GameId, GamePool}]} ->
+    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], [{GameName, GameId, GamePool, GameQuestions, GameSeconds}]} ->
       Player = From#jid.user,
       Resource = From#jid.resource,
       %% then cache in player_store
-      case check_player_in_game(Server, MinPlayers, GameId, GamePool, Player, Resource) of
+      case check_player_in_game(Server, MinPlayers,
+          GameId, GamePool, GameQuestions, GameSeconds, Player, Resource) of
         "ok" ->
           {[{"return", "true"}, {"desc", GameName}], "Find game to join"};
         Err ->
@@ -393,11 +394,12 @@ execute_command(?LEAVE_EVENT_NODE, From, Options, _State) ->
   end.
   
 %% Helpers
+
+%% Get game name, pool_id, questions_per_game, seconds_per_question
 get_game_room(GameId, Server) ->
-  ejabberd_odbc:sql_query(
-      Server,
-      ["select name, slug, pool_id from sixclicks_rooms "
-       "where slug='", GameId, "'"]
+  ejabberd_odbc:sql_query(Server,
+      ["select name, slug, pool_id, questions_per_game, seconds_per_question "
+       "from sixclicks_rooms where slug='", GameId, "'"]
   ).
 
 get_all_game_rooms(Server) ->
@@ -445,12 +447,15 @@ game_items(Items, GameService) ->
 
 %% One account can log in at many resources (devices),
 %% but don't allow them join in one game. They can play in diference room games.
-check_player_in_game(Server, MinPlayers, GameId, GamePool, Player, Resource) ->
+check_player_in_game(Server, MinPlayers,
+    GameId, GamePool, GameQuestions, GameSeconds,
+    Player, Resource) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_'}) of
     [] ->
       player_store:insert(GameId, Player, Resource),
-      triviajabber_game:take_new_player(Server, GameId, GamePool, MinPlayers),
+      triviajabber_game:take_new_player(Server, GameId, GamePool,
+          GameQuestions, GameSeconds, MinPlayers),
       "ok";
     Res ->
       ?WARNING_MSG("check_player_in_game ~p", [Res]),
