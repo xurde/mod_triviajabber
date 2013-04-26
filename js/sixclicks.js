@@ -63,7 +63,11 @@ lissn.chat={
   },
 
   rawInput:function(data) {
-    $(".response-log").text(data);
+    var restype = $(data).attr('type');
+    if (restype === "question")
+      $(".question-log").text(data);
+    else
+      $(".response-log").text(data);
   },
 
   rawOutput:function(data) {

@@ -56,6 +56,7 @@ start_link(Host, Opts) ->
 start(Host, Opts) ->
   player_store:init(),
   triviajabber_store:init(),
+  triviajabber_question:init(),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
   ChildSpec =
     {Proc,
@@ -67,6 +68,7 @@ start(Host, Opts) ->
   supervisor:start_child(ejabberd_sup, ChildSpec).
 
 stop(Host) ->
+  triviajabber_question:close(),
   triviajabber_store:close(),
   player_store:close(),
   ejabberd_hooks:delete(sm_remove_connection_hook, Host,
@@ -329,11 +331,11 @@ game_disco_items(Server, GameService) ->
 %%    ]
 %%  }].
   try get_all_game_rooms(Server) of
-    {selected, ["name", "level",
-        "questions_per_game", "slug"], []} ->
+    {selected, ["name", "level", "questions_per_game",
+        "slug", "topic"], []} ->
       [];
-    {selected, ["name", "level",
-        "questions_per_game", "slug"], GameList}
+    {selected, ["name", "level", "questions_per_game",
+        "slug", "topic"], GameList}
         when erlang:is_list(GameList) ->
       {Trial, Regular, Official} = filter_games(GameList, {[], [], []}),
       OfficGames = add_games(GameService, "Official", Official, []),
@@ -351,9 +353,8 @@ game_disco_items(Server, GameService) ->
 
 %% "Join game" command
 execute_command(?JOIN_EVENT_NODE, From, Options,
-    #sixclicksstate{host = Server, minplayers = MinPlayers} = State) ->
+    #sixclicksstate{host = Server, minplayers = MinPlayers} = _State) ->
   [GameId] = proplists:get_value("game_id", Options),
-  ?WARNING_MSG("State ~p", [State]),
   %% check game room in DB
   try get_game_room(GameId, Server) of
     {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], []} ->
@@ -405,20 +406,24 @@ get_game_room(GameId, Server) ->
 
 get_all_game_rooms(Server) ->
   ejabberd_odbc:sql_query(Server,
-      ["select name, level, questions_per_game, slug from sixclicks_rooms"]
+      ["select name, level, questions_per_game, "
+       "slug, topic from sixclicks_rooms"]
   ).
 
 filter_games([], {T, R, O}) ->
   {T, R, O};
 filter_games([Head|Tail], {T, R, O}) ->
-  {Name, Level, Questions, Slug} = Head,
+  {Name, Level, Questions, Slug, Topic} = Head,
   case Level of
     "T" ->
-      filter_games(Tail, {[{Name, Questions, Slug}|T], R, O});
+      filter_games(Tail,
+          {[{Name, Questions, Slug, Topic}|T], R, O});
     "R" ->
-      filter_games(Tail, {T, [{Name, Questions, Slug}|R], O});
+      filter_games(Tail,
+          {T, [{Name, Questions, Slug, Topic}|R], O});
     "O" ->
-      filter_games(Tail, {T, R, [{Name, Questions, Slug}|O]})
+      filter_games(Tail,
+          {T, R, [{Name, Questions, Slug, Topic}|O]})
   end.
 
 add_games(GameService, Group, G, Ret) ->
@@ -436,14 +441,47 @@ add_games(GameService, Group, G, Ret) ->
   end.
 
 game_items(Items, GameService) ->
-  lists:map(fun({Name, Questions, Slug}) ->
+  lists:map(fun({Name, Questions, Slug, Topic}) ->
     Jid = Slug ++ "@" ++ GameService,
     PlayersList = player_store:match_object({Slug, '$1', '_'}),
     PlayersCount = erlang:length(PlayersList),
+% FIXME: bug when we get current question in slug
+%    CurrentQuest = triviajabber_game:current_question(Slug),
+%    case CurrentQuest of
+%      {ok, QuestionId} ->
+%        {xmlelement, "game",
+%          [{"name", Name}, {"jid", Jid},
+%           {"topic", Topic}, {"question", QuestionId},
+%           {"questions", Questions},
+%           {"players", erlang:integer_to_list(PlayersCount)}],
+%          []
+%        };
+%      {failed, null} ->
+%        {xmlelement, "game",
+%          [{"name", Name}, {"jid", Jid},
+%           {"topic", Topic}, {"question", "-1"},
+%           {"questions", Questions},
+%           {"players", erlang:integer_to_list(PlayersCount)}],
+%          []
+%        };
+%      Ret ->
+%        ?WARNING_MSG("failed to get current question (~p slug): ~p",
+%            [Slug, Ret]),
+%        {xmlelement, "game",
+%          [{"name", Name}, {"jid", Jid}, 
+%           {"topic", Topic}, {"question", "-1"}, 
+%           {"questions", Questions}, 
+%           {"players", erlang:integer_to_list(PlayersCount)}],
+%          []
+%        }
+%    end
     {xmlelement, "game",
-      [{"name", Name}, {"jid", Jid}, {"topic", "test topic"}, {"question", "-1"}, {"questions", Questions}, {"players", erlang:integer_to_list(PlayersCount)}],
-      []
-     }
+          [{"name", Name}, {"jid", Jid},
+           {"topic", Topic}, {"question", "-1"},
+           {"questions", Questions},
+           {"players", erlang:integer_to_list(PlayersCount)}],
+          []
+    }
   end, Items).
 
 %% One account can log in at many resources (devices),
