@@ -219,7 +219,7 @@ do_route(To, From, Packet, State) ->
       ?WARNING_MSG("[~p] Name ~p, Attrs ~p", [To, Name, Attrs]),
       case Name of
         "message" ->
-          AnswerType = xml:get_attr_s("type", Attrs);
+          AnswerType = xml:get_attr_s("type", Attrs),
           ?WARNING_MSG("From ~p, To ~p(~p), type ~p",
             [From#jid.user, To#jid.user, To#jid.server, AnswerType]);
         _ ->

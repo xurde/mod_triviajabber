@@ -77,7 +77,11 @@ lissn.chat={
   },
 
   rawOutput:function(data) {
-    $(".request-log").text(data);
+    var anstype = $(data).attr('type');
+    if (anstype === "answer")
+      $(".answer-log").text(data);
+    else
+      $(".request-log").text(data);
   },
 
   connect:function(chatjid, password){
@@ -187,10 +191,11 @@ lissn.chat={
     lissn.chat.connection.send(unavailablePresence);
   },
 
-  answer_msg: function(answer, slug) {
-    var toSlug = slug + "@triviajabber."+lissn.chat.domainName
-    var answer_msg = $msg({to: from, from: toSlug, type: 'answer'})
-        .cnode('answer').t(answer);
+  answer_msg: function(myans, slug) {
+    $("#trackanswer").text(slug);
+    var toSlug = slug + "@triviajabber."+lissn.chat.domainName;
+    var answer_msg = $msg({to: toSlug, "type": "answer"})
+        .c("answer").t(myans);
 
     lissn.chat.connection.send(answer_msg);
   }
