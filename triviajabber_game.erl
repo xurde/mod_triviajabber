@@ -27,6 +27,7 @@
 -define(DEFAULT_MINPLAYERS, 1).
 -define(READY, "no").
 -define(COUNTDOWN, 3000).
+-define(KILLAFTER, 1500).
 
 -record(gamestate, {host, slug, pool_id, questions, seconds,
     minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
@@ -64,6 +65,7 @@ handle_cast({joined, Slug, PoolId},
       ?WARNING_MSG("has game ~p started ? ~p", [Slug, Yes]),
       {noreply, State}
   end;
+
 %% when one player has left
 handle_cast({left, Slug}, State) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p, state ~p", [self(), Slug, State]),
@@ -71,6 +73,7 @@ handle_cast({left, Slug}, State) ->
 handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
+
 %% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
@@ -88,7 +91,7 @@ handle_info(countdown, #gamestate{
       ?ERROR_MSG("~p (~p) has no question after returning permutation",
           [Slug, PoolId]),
       finish_game(Slug, PoolId),
-      {stop, theend, State};
+      {stop, normal, State};
     [{UniqueQuestion}] ->
       send_question(Host, Slug, UniqueQuestion, StrSeconds, 1),
       next_question(StrSeconds, [], 1),
@@ -98,7 +101,6 @@ handle_info(countdown, #gamestate{
       next_question(StrSeconds, Tail, 2),
       {noreply, State}
   end;
-
 handle_info({questionslist, QuestionIds, Step}, #gamestate{
     host = Host, slug = Slug,
     pool_id = PoolId, questions = _Questions,
@@ -109,7 +111,7 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       ?WARNING_MSG("questions of ~p (~p) have been sent",
           [Slug, PoolId]),
       finish_game(Slug, PoolId),
-      {stop, theend, State};
+      {stop, normal, State};
     [{LastQuestion}] ->
       send_question(Host, Slug, LastQuestion, StrSeconds, Step),
       next_question(StrSeconds, [], Step),
@@ -119,14 +121,23 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       next_question(StrSeconds, Tail, Step + 1),
       {noreply, State}
   end;
+handle_info(killafter, #gamestate{
+    host = _Host, slug = Slug,
+    pool_id = _PoolId, questions = _Questions,
+    seconds = _StrSeconds, started = _Started,
+    minplayers = _MinPlayers} = State) ->
+  recycle_game(self(), Slug),
+%  gen_server:call(self(), stop),
+%  {noreply, State};
+  {stop, normal, State};
 handle_info(_Info, State) ->
   {noreply, State}.
 
 terminate(Reason, #gamestate{
       slug = Slug}) ->
-  ?WARNING_MSG("terminate ~p: ~p", [self(), Reason]),
-  triviajabber_question:delete(self()),
-  triviajabber_store:delete(Slug),
+  Pid = self(),
+  ?WARNING_MSG("terminate ~p(~p): ~p", [Pid, Slug, Reason]),
+  recycle_game(Pid, Slug),
   ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -195,9 +206,12 @@ remove_old_player(Slug) ->
       case player_store:match_object({Slug, '_', '_'}) of
         [] ->
           ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
-          gen_server:call(Pid, stop);
+          %% TODO: kill in 1500 miliseconds
+          erlang:send_after(?KILLAFTER, Pid, killafter);
+%          recycle_game(Pid, Slug),
+%          gen_server:call(Pid, stop);
         Res ->
-          ?WARNING_MSG("async notify ~p", [Res]),
+          ?WARNING_MSG("sync notify ~p", [Res]),
           gen_server:cast(Pid, {left, Slug})
       end;
     {null, not_found, not_found, not_found} ->
@@ -293,6 +307,12 @@ next_question(StrSeconds, Tail, Step) ->
 finish_game(Slug, PoolId) ->
   ?WARNING_MSG("game ~p (pool ~p) finished", [Slug, PoolId]),
   ok.
+
+recycle_game(Pid, Slug) ->
+  player_store:match_delete({Slug, '_', '_'}),
+  triviajabber_store:delete(Slug),
+  triviajabber_question:delete(Pid).
+  
 
 % [
 %  {xmlelement, "option", [{"id", "1"}], [{xmlcdata, "White"}]},

@@ -367,7 +367,7 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
       case check_player_in_game(Server, MinPlayers,
           GameId, GamePool, GameQuestions, GameSeconds, Player, Resource) of
         "ok" ->
-          {[{"return", "true"}, {"desc", GameName}], "Find game to join"};
+          {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
         Err ->
           ?WARNING_MSG("You have joined this game ~p", [Err]),
           {[{"return", "fail"}, {"desc", GameName}], "You have joined this game"}
@@ -475,6 +475,7 @@ game_items(Items, GameService) ->
 %          []
 %        }
 %    end
+
     {xmlelement, "game",
           [{"name", Name}, {"jid", Jid},
            {"topic", Topic}, {"question", "-1"},
@@ -492,12 +493,13 @@ check_player_in_game(Server, MinPlayers,
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_'}) of
     [] ->
+      ?WARNING_MSG("insert new player ~p/~p into ~p", [Player, Resource, GameId]),
       player_store:insert(GameId, Player, Resource),
       triviajabber_game:take_new_player(Server, GameId, GamePool,
           GameQuestions, GameSeconds, MinPlayers),
       "ok";
     Res ->
-      ?WARNING_MSG("check_player_in_game ~p", [Res]),
+      ?WARNING_MSG("find ~p/~p, but see ~p", [Player, Resource, Res]),
       "joined"
   end.
 %% Check if this player at this resouce has joined game room.
