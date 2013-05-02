@@ -60,6 +60,12 @@ lissn.chat={
     $("#discoitems").click(function(ev) {
       lissn.chat.disco_items_iq();
     });
+
+    $("#answergame").click(function(ev) {
+      var answergameid = $("#answergameid").val();
+      var gameid = $("#gameid").val();
+      lissn.chat.answer_msg(answergameid, gameid);
+    });
   },
 
   rawInput:function(data) {
@@ -181,6 +187,13 @@ lissn.chat={
     lissn.chat.connection.send(unavailablePresence);
   },
 
+  answer_msg: function(answer, slug) {
+    var toSlug = slug + "@triviajabber."+lissn.chat.domainName
+    var answer_msg = $msg({to: from, from: toSlug, type: 'answer'})
+        .cnode('answer').t(answer);
+
+    lissn.chat.connection.send(answer_msg);
+  }
 }; // end lissn.chat
 
 $(document).ready(function(){

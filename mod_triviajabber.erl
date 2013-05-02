@@ -217,14 +217,21 @@ do_route(To, From, Packet, State) ->
       end;
     _ ->
       ?WARNING_MSG("[~p] Name ~p, Attrs ~p", [To, Name, Attrs]),
-      case xml:get_attr_s("type", Attrs) of
-        "error" ->
-          ok;
-        "result" ->
-          ok;
+      case Name of
+        "message" ->
+          AnswerType = xml:get_attr_s("type", Attrs);
+          ?WARNING_MSG("From ~p, To ~p(~p), type ~p",
+            [From#jid.user, To#jid.user, To#jid.server, AnswerType]);
         _ ->
-          Err = jlib:make_error_reply(Packet, ?ERR_ITEM_NOT_FOUND),
-          ejabberd_router:route(To, From, Err)
+          case xml:get_attr_s("type", Attrs) of
+            "error" ->
+              ok;
+            "result" ->
+              ok;
+            _ ->
+              Err = jlib:make_error_reply(Packet, ?ERR_ITEM_NOT_FOUND),
+              ejabberd_router:route(To, From, Err)
+          end
       end
   end.
 
@@ -445,44 +452,35 @@ game_items(Items, GameService) ->
     Jid = Slug ++ "@" ++ GameService,
     PlayersList = player_store:match_object({Slug, '$1', '_'}),
     PlayersCount = erlang:length(PlayersList),
-% FIXME: bug when we get current question in slug
-%    CurrentQuest = triviajabber_game:current_question(Slug),
-%    case CurrentQuest of
-%      {ok, QuestionId} ->
-%        {xmlelement, "game",
-%          [{"name", Name}, {"jid", Jid},
-%           {"topic", Topic}, {"question", QuestionId},
-%           {"questions", Questions},
-%           {"players", erlang:integer_to_list(PlayersCount)}],
-%          []
-%        };
-%      {failed, null} ->
-%        {xmlelement, "game",
-%          [{"name", Name}, {"jid", Jid},
-%           {"topic", Topic}, {"question", "-1"},
-%           {"questions", Questions},
-%           {"players", erlang:integer_to_list(PlayersCount)}],
-%          []
-%        };
-%      Ret ->
-%        ?WARNING_MSG("failed to get current question (~p slug): ~p",
-%            [Slug, Ret]),
-%        {xmlelement, "game",
-%          [{"name", Name}, {"jid", Jid}, 
-%           {"topic", Topic}, {"question", "-1"}, 
-%           {"questions", Questions}, 
-%           {"players", erlang:integer_to_list(PlayersCount)}],
-%          []
-%        }
-%    end
-
-    {xmlelement, "game",
+    case triviajabber_game:current_question(Slug) of
+      {ok, QuestionId} ->
+        {xmlelement, "game",
+          [{"name", Name}, {"jid", Jid},
+%% BUG: should show string, not number QuestionId
+           {"topic", Topic}, {"question", erlang:integer_to_list(QuestionId)},
+           {"questions", Questions},
+           {"players", erlang:integer_to_list(PlayersCount)}],
+          []
+        };
+      {failed, null} ->
+        {xmlelement, "game",
           [{"name", Name}, {"jid", Jid},
            {"topic", Topic}, {"question", "-1"},
            {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
           []
-    }
+        };
+      Ret ->
+        ?WARNING_MSG("failed to get current question (~p slug): ~p",
+            [Slug, Ret]),
+        {xmlelement, "game",
+          [{"name", Name}, {"jid", Jid}, 
+           {"topic", Topic}, {"question", "-1"}, 
+           {"questions", Questions}, 
+           {"players", erlang:integer_to_list(PlayersCount)}],
+          []
+        }
+    end
   end, Items).
 
 %% One account can log in at many resources (devices),

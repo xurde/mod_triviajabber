@@ -206,10 +206,8 @@ remove_old_player(Slug) ->
       case player_store:match_object({Slug, '_', '_'}) of
         [] ->
           ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
-          %% TODO: kill in 1500 miliseconds
+          %% kill empty slug in 1500 miliseconds
           erlang:send_after(?KILLAFTER, Pid, killafter);
-%          recycle_game(Pid, Slug),
-%          gen_server:call(Pid, stop);
         Res ->
           ?WARNING_MSG("sync notify ~p", [Res]),
           gen_server:cast(Pid, {left, Slug})
@@ -232,7 +230,6 @@ current_question(Slug) ->
           {error, Ret}
       end;
     {null, not_found, not_found, not_found} ->
-      ?WARNING_MSG("not found pid of slug ~p", [Slug]),
       {failed, null};
     Error ->
       ?ERROR_MSG("find pid of slug ~p: ~p", [Slug, Error]),
