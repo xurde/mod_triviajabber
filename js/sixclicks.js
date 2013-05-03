@@ -70,9 +70,11 @@ lissn.chat={
 
   rawInput:function(data) {
     var restype = $(data).attr('type');
-    if (restype === "question")
+    if (restype === "question") {
       $(".question-log").text(data);
-    else
+      var qId = $(data).attr('id');
+      $("#trackanswer").text(qId);
+    } else
       $(".response-log").text(data);
   },
 
@@ -192,9 +194,9 @@ lissn.chat={
   },
 
   answer_msg: function(myans, slug) {
-    $("#trackanswer").text(slug);
+    var qId = $("#trackanswer").text();
     var toSlug = slug + "@triviajabber."+lissn.chat.domainName;
-    var answer_msg = $msg({to: toSlug, "type": "answer"})
+    var answer_msg = $msg({to: toSlug, "type": "answer", "id": qId})
         .c("answer").t(myans);
 
     lissn.chat.connection.send(answer_msg);

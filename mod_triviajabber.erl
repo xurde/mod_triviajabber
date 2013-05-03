@@ -216,12 +216,21 @@ do_route(To, From, Packet, State) ->
           ok
       end;
     _ ->
-      ?WARNING_MSG("[~p] Name ~p, Attrs ~p", [To, Name, Attrs]),
       case Name of
         "message" ->
+          QuestionId = xml:get_attr_s("id", Attrs),
           AnswerType = xml:get_attr_s("type", Attrs),
-          ?WARNING_MSG("From ~p, To ~p(~p), type ~p",
-            [From#jid.user, To#jid.user, To#jid.server, AnswerType]);
+          Triviajabber = ?DEFAULT_GAME_SERVICE ++ "." ++ From#jid.server,
+          TriviajabberDomain = To#jid.server,
+          if
+            Triviajabber =:= TriviajabberDomain, AnswerType =:= "answer" ->
+              AnswerStr = xml:get_subtag_cdata(Packet, "answer"),
+              triviajabber_game:get_answer(
+                  From#jid.user, To#jid.user,
+                  AnswerStr, QuestionId);
+            true ->
+              ?WARNING_MSG("~p != ~p", [Triviajabber, TriviajabberDomain])
+          end;
         _ ->
           case xml:get_attr_s("type", Attrs) of
             "error" ->
