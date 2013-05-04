@@ -138,7 +138,6 @@ handle_info(countdown, #gamestate{
       ?ERROR_MSG("~p (~p) has no question after returning permutation",
           [Slug, PoolId]),
       %% Don't have to handle after game has finished
-      %% finish_game(Slug, PoolId, _Final),
       {stop, normal, State};
     [{UniqueQuestion}] ->
       send_question(Host, Final, Questions,
@@ -210,15 +209,12 @@ init([Host, Opts]) ->
   mnesia:create_table(answer1state, [{attributes,
       record_info(fields, answer1state)}]),
   mnesia:clear_table(answer1state),
-%  Ans1 = queue:new(),
   mnesia:create_table(answer0state, [{attributes,
       record_info(fields, answer0state)}]),
   mnesia:clear_table(answer0state),
-%  Ans0 = queue:new(),
   mnesia:create_table(playersstate, [{attributes,
       record_info(fields, playersstate)}]),
   mnesia:clear_table(playersstate),
-%  Pls = ordsets:new(),
 
   Slug = gen_mod:get_opt(slug, Opts, ""),
   MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
@@ -236,17 +232,6 @@ init([Host, Opts]) ->
       triviajabber_question:insert(self(), -1, null, null, 0),
       "no"
   end,
-
-%  mnesia:dirty_write(#answer1state{
-%    slug = Slug, rightqueue = Ans1
-%  }),
-%  mnesia:dirty_write(#answer0state{
-%    slug = Slug, wrongqueue = Ans0
-%  }),
-%  mnesia:dirty_write(#playersstate{
-%    slug = Slug, playersets = Pls
-%  }),
-
   {ok, #gamestate{
       host = Host,
       slug = Slug, pool_id = PoolId,
@@ -452,8 +437,14 @@ push_right_answer(Slug, Player, HitTime) ->
   mnesia:transaction(Fun).
 
 pop_right_answer(Slug) ->
-  E = mnesia:dirty_read(answer1state, Slug),
-  ?WARNING_MSG("pop_right ~p", [E]). 
+  case mnesia:dirty_read(answer1state, Slug) of
+    [] ->
+      [];
+    [E] ->
+      E#answer1state.rightqueue;
+    _ ->
+      []
+  end. 
 
 %% push wrong answer
 push_wrong_answer(Slug, Player, HitTime) ->
@@ -477,8 +468,14 @@ push_wrong_answer(Slug, Player, HitTime) ->
   mnesia:transaction(Fun).
 
 pop_wrong_answer(Slug) ->
-  E = mnesia:dirty_read(answer0state, Slug),
-  ?WARNING_MSG("pop_wrong ~p", [E]).
+  case mnesia:dirty_read(answer0state, Slug) of
+    [] ->
+      [];
+    [E] ->
+      E#answer0state.wrongqueue;
+    _ ->
+      []
+  end.
 
 %% result of previous question
 result_previous_question(_, _, _, 0) ->
@@ -490,8 +487,13 @@ result_previous_question(Slug, Final, Questions, Step) ->
   %% TODO: pop result from 2 queues
   ?WARNING_MSG("result for step ~p, final ~p, total ~p",
       [Step-1, Final, Questions]),
-  pop_right_answer(Slug),
-  pop_wrong_answer(Slug),
+
+  
+  SortedL1 = pop_right_answer(Slug),
+  SortedL0 = pop_wrong_answer(Slug),
+  PosRanking = positive_scores(SortedL1, Final, [], 1),
+  Ranking = negative_scores(SortedL0, Final, PosRanking, 1)
+  %% FIXME: who don't give answer, set negative scores
   mnesia:clear_table(answer1state),
   mnesia:clear_table(answer0state),
   mnesia:clear_table(playersstate),
@@ -501,7 +503,6 @@ result_previous_question(Slug, Final, Questions, Step) ->
 next_question(StrSeconds, Tail, Step) ->
   case string:to_integer(StrSeconds) of
     {Seconds, []} ->
-%% ?WARNING_MSG("send_after ~p for step ~p", [Seconds * 1000, Step]),
       erlang:send_after(Seconds * 1000 + ?KILLAFTER, self(),
           {questionslist, Tail, Step});
     {RetSeconds, Reason} ->
@@ -601,3 +602,18 @@ get_hittime(Stamp) ->
     true ->
       0
   end.
+
+positive_scores([], _, Ret, Position) ->
+  {Ret, Position};
+positive_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
+  Score = Final / Position,
+  NewRet = [{Player, HitTime, Score}|Ret],
+  positive_scores([Tail], Final, NewRet, Position+1).
+
+negative_scores([], _, Ret, Position) ->
+  {Ret, Position};
+negative_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
+  Score = Final / (Position * -2),
+  NewRet = [{Player, HitTime, Score}|Ret],
+  negative_scores([Tail], Final, NewRet, Position+1).
+
