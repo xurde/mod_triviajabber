@@ -10,7 +10,7 @@
 -module(triviajabber_question).
 -author('od06@htklabs.com').
 
--export([init/0, close/0, insert/4, delete/1, lookup/1]).
+-export([init/0, close/0, insert/5, delete/1, lookup/1]).
 
 init() ->
   ets:new(?MODULE, [public, named_table]).
@@ -19,14 +19,14 @@ close() ->
   ets:delete_all_objects(?MODULE),
   ets:delete(?MODULE).
 
-insert(Pid, Question, Answer, QuestionId) ->
-  ets:insert(?MODULE, {Pid, Question, Answer, QuestionId}),
-  {ok, Pid, Question, Answer}.
+insert(Pid, Question, Answer, QuestionId, TimeStamp) ->
+  ets:insert(?MODULE, {Pid, Question, Answer, QuestionId, TimeStamp}),
+  {ok, Pid, Question, Answer, QuestionId, TimeStamp}.
 
 lookup(Pid) ->
   case ets:lookup(?MODULE, Pid) of
-    [{Pid, Question, Answer, QuestionId}] ->
-      {ok, Pid, Question, Answer, QuestionId};
+    [{Pid, Question, Answer, QuestionId, TimeStamp}] ->
+      {ok, Pid, Question, Answer, QuestionId, TimeStamp};
     [] ->
       {null, not_found};
     Any ->
