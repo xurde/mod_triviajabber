@@ -9,7 +9,7 @@
 -module(player_store).
 -author('od06@htklabs.com').
 
--export([init/0, close/0, insert/3, delete/3,
+-export([init/0, close/0, insert/3,
          match_delete/1, match_object/1]).
 
 init() ->
@@ -20,11 +20,8 @@ close() ->
   ets:delete(?MODULE).
 
 insert(Slug, Player, Resource) ->
-  ets:insert(?MODULE, {Slug, Player, Resource}),
+  ets:insert(?MODULE, {Slug, Player, Resource}).
   {ok, Slug, Player, Resource}.
-
-delete(Slug, Player, Resource) ->
-  ets:delete(?MODULE, {Slug, Player, Resource}).
 
 match_delete(Pattern) ->
   ets:match_delete(?MODULE, Pattern).

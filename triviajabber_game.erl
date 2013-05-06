@@ -36,10 +36,11 @@
 -record(answer1state, {slug, rightqueue}).
 -record(answer0state, {slug, wrongqueue}).
 -record(playersstate, {slug, playersets}). 
+-record(scoresstate, {player, score}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
-handle_cast({joined, Slug, PoolId}, #gamestate{
+handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
     host = Host,
     slug = Slug, pool_id = PoolId,
     questions = Questions, seconds = Seconds,
@@ -47,10 +48,14 @@ handle_cast({joined, Slug, PoolId}, #gamestate{
     minplayers = MinPlayers}) ->
   ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p, final ~p",
       [self(), Slug, MinPlayers, Final+1]),
+  mnesia:dirty_write(#scoresstate{
+      player = NewComer,
+      score = 0
+  }),
+  
   case Started of
     "no" ->
        List = player_store:match_object({Slug, '_', '_'}),
-       ?WARNING_MSG("~p hasnt started, ~p", [Slug, List]),
        if
          erlang:length(List) >= MinPlayers ->
            ?WARNING_MSG("new commer fills enough players to start game", []),
@@ -193,6 +198,7 @@ terminate(Reason, #gamestate{
   mnesia:delete_table(answer1state),
   mnesia:delete_table(answer0state),
   mnesia:delete_table(playersstate),
+  mnesia:delete_table(scoresstate),
   recycle_game(Pid, Slug),
   ok.
 
@@ -215,14 +221,23 @@ init([Host, Opts]) ->
   mnesia:create_table(playersstate, [{attributes,
       record_info(fields, playersstate)}]),
   mnesia:clear_table(playersstate),
+  mnesia:create_table(scoresstate, [{attributes,
+      record_info(fields, scoresstate)}]),
+  mnesia:clear_table(scoresstate),
 
   Slug = gen_mod:get_opt(slug, Opts, ""),
   MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
   PoolId = gen_mod:get_opt(pool_id, Opts, 1),
   Questions = gen_mod:get_opt(questions, Opts, 0),
   Seconds = gen_mod:get_opt(seconds, Opts, -1),
+  FirstPlayer = gen_mod:get_opt(player, Opts, ""),
   ?WARNING_MSG("@@@ child ~p processes {~p, ~p, ~p, ~p}",
       [self(), Slug, PoolId, Questions, Seconds]),
+  mnesia:dirty_write(#scoresstate{
+      player = FirstPlayer,
+      score = 0
+  }),
+
   Started = if
     MinPlayers =:= 1 ->
       triviajabber_question:insert(self(), 0, null, null, 0),
@@ -247,17 +262,17 @@ init([Host, Opts]) ->
 
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
-take_new_player(Host, Slug, PoolId,
+take_new_player(Host, Slug, PoolId, Player,
     Questions, Seconds, MinPlayers) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, PoolId, Pid} ->
       ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
-      gen_server:cast(Pid, {joined, Slug, PoolId}),
+      gen_server:cast(Pid, {joined, Slug, PoolId, Player}),
       ok;
     {null, not_found, not_found, not_found} ->
       Opts = [{slug, Slug}, {pool_id, PoolId},
               {questions, Questions}, {seconds, Seconds},
-              {minplayers, MinPlayers}],
+              {player, Player}, {minplayers, MinPlayers}],
       {ok, Pid} = start_link(Host, Opts),
       ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, PoolId, Pid),
@@ -360,7 +375,16 @@ send_question(Server, Final, Questions, Slug,
       CurrentTime = get_timestamp(),
       triviajabber_question:insert(self(), Step, Asw, MsgId, CurrentTime),
       %% it's too late to answer, module informs result of previous question.
-      result_previous_question(Slug, Final, Questions, Step),
+      RankingQuestion = {xmlelement, "message",
+        [{"type", "ranking"}, {"id", randoms:get_string()}],
+        [{xmlelement, "rank",
+            [{"type", "question"},
+             {"count", erlang:integer_to_list(Step-1)},
+             {"total", Questions}],
+            result_previous_question(Slug, Final, Questions, Step)
+         }
+        ]
+      },
       %% then broadcast result previous question and new question
       List = player_store:match_object({Slug, '_', '_'}),
       lists:foreach(fun({_, Player, Resource}) ->
@@ -368,7 +392,7 @@ send_question(Server, Final, Questions, Slug,
         GameServer = "triviajabber." ++ Server,
         From = jlib:make_jid(Slug, GameServer, Slug),
         %% TODO return result of last question
-        
+        ejabberd_router:route(From, To, RankingQuestion),
         %% then next question
         ejabberd_router:route(From, To, QuestionPacket)
       end, List);
@@ -492,12 +516,13 @@ result_previous_question(Slug, Final, Questions, Step) ->
   SortedL1 = pop_right_answer(Slug),
   SortedL0 = pop_wrong_answer(Slug),
   PosRanking = positive_scores(SortedL1, Final, [], 1),
-  Ranking = negative_scores(SortedL0, Final, PosRanking, 1)
-  %% FIXME: who don't give answer, set negative scores
+  Ranking = negative_scores(SortedL0, Final, PosRanking, 1),
+  PlayersTag = update_score(Ranking),
+  %% who don't give answer, dont change his score
   mnesia:clear_table(answer1state),
   mnesia:clear_table(answer0state),
   mnesia:clear_table(playersstate),
-  ok.
+  PlayersTag.
 
 %% next question will be sent in seconds
 next_question(StrSeconds, Tail, Step) ->
@@ -603,17 +628,48 @@ get_hittime(Stamp) ->
       0
   end.
 
-positive_scores([], _, Ret, Position) ->
-  {Ret, Position};
+positive_scores([], _, Ret, _) ->
+  Ret;
 positive_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
   Score = Final / Position,
-  NewRet = [{Player, HitTime, Score}|Ret],
+  NewRet = [{Player, HitTime, Score, Position}|Ret],
   positive_scores([Tail], Final, NewRet, Position+1).
 
 negative_scores([], _, Ret, Position) ->
-  {Ret, Position};
+  Ret;
 negative_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
   Score = Final / (Position * -2),
-  NewRet = [{Player, HitTime, Score}|Ret],
+  NewRet = [{Player, HitTime, Score, Position}|Ret],
   negative_scores([Tail], Final, NewRet, Position+1).
 
+update_score([], Ret) ->
+  Ret;
+update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
+  case mnesia:dirty_read(scoresstate, Player) of
+    [] ->
+      ?ERROR_MSG("Dont find ~p in scoresstate", [Player]),
+      update_score(Tail, Ret);
+    [E] ->
+      GameScore = E#scoresstate.score + Score,
+      mnesia:dirty_write(#scoresstate{
+        player = Player,
+        score = GameScore
+      }),
+      AddTag = questionranking_player_tag(
+          Player, Time, Pos, Score),
+      update_score(Tail, [AddTag|Ret]);
+    Ret ->
+      ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Ret]),
+      update_score(Tail, Ret)
+  end.
+
+questionranking_player_tag(Nickname, Time, Pos, Score) ->
+  {xmlelement, "player",
+      [{"nickname", Nickname},
+       {"score", erlang:integer_to_list(Score)},
+       {"pos", erlang:integer_to_list(Pos)},
+       {"time",erlang:integer_to_list(Time)},
+      ],
+      []
+  }.
+  

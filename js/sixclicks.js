@@ -74,6 +74,8 @@ lissn.chat={
       $(".question-log").text(data);
       var qId = $(data).attr('id');
       $("#trackanswer").text(qId);
+    } else if (restype === "ranking") {
+      $("#question-ranking").text(data);
     } else
       $(".response-log").text(data);
   },

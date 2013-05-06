@@ -90,7 +90,7 @@ user_offline(User, Server, Resource, _Status) ->
 remove_player_from_games(Jid) ->
   User = Jid#jid.user,
   Res = Jid#jid.resource,
-  player_store:match_delete({'_', User, Res}).
+  player_store:match_delete({'_', User, Res, '_'}).
 
 %%==============================================================
 %% gen_server callbacks
@@ -502,7 +502,7 @@ check_player_in_game(Server, MinPlayers,
     [] ->
       ?WARNING_MSG("insert new player ~p/~p into ~p", [Player, Resource, GameId]),
       player_store:insert(GameId, Player, Resource),
-      triviajabber_game:take_new_player(Server, GameId, GamePool,
+      triviajabber_game:take_new_player(Server, GameId, GamePool, Player,
           GameQuestions, GameSeconds, MinPlayers),
       "ok";
     Res ->
