@@ -20,7 +20,7 @@ close() ->
   ets:delete(?MODULE).
 
 insert(Slug, Player, Resource) ->
-  ets:insert(?MODULE, {Slug, Player, Resource}).
+  ets:insert(?MODULE, {Slug, Player, Resource}),
   {ok, Slug, Player, Resource}.
 
 match_delete(Pattern) ->

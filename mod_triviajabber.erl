@@ -90,7 +90,7 @@ user_offline(User, Server, Resource, _Status) ->
 remove_player_from_games(Jid) ->
   User = Jid#jid.user,
   Res = Jid#jid.resource,
-  player_store:match_delete({'_', User, Res, '_'}).
+  player_store:match_delete({'_', User, Res}).
 
 %%==============================================================
 %% gen_server callbacks

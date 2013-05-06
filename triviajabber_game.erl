@@ -17,7 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 %% helpers
--export([take_new_player/6, remove_old_player/1,
+-export([take_new_player/7, remove_old_player/1,
          current_question/1, get_answer/4]).
 
 -include("ejabberd.hrl").
@@ -354,6 +354,37 @@ will_send_question(Server, Slug) ->
   erlang:send_after(?COUNTDOWN, self(), countdown),
   ok.
 
+%% send first question
+send_question(Server, _, _, Slug,
+    QuestionId, Seconds, 1) ->
+  case get_question_info(Server, QuestionId) of
+    {ok, Qst, Asw, QLst} ->
+      MsgId = Slug ++ randoms:get_string(),
+      OptList = generate_opt_list(QLst, [], 1),
+      QuestionPacket = {xmlelement, "message",
+        [{"type", "question"}, {"id", MsgId}],
+        [{xmlelement, "question",
+            [{"time", Seconds}], [{xmlcdata, Qst}]
+         },
+         {xmlelement, "answers",
+            [], OptList
+         }
+        ]
+      },
+      %% set first question,
+      CurrentTime = get_timestamp(),
+      triviajabber_question:insert(self(), 1, Asw, MsgId, CurrentTime),
+      %% broadcast first question
+      List = player_store:match_object({Slug, '_', '_'}),
+      lists:foreach(fun({_, Player, Resource}) ->
+        To = jlib:make_jid(Player, Server, Resource),
+        GameServer = "triviajabber." ++ Server,
+        From = jlib:make_jid(Slug, GameServer, Slug),
+        ejabberd_router:route(From, To, QuestionPacket)
+      end, List);
+    _ ->
+      error
+  end;
 %% send question to all player in slug
 send_question(Server, Final, Questions, Slug,
     QuestionId, Seconds, Step) ->
@@ -385,6 +416,7 @@ send_question(Server, Final, Questions, Slug,
          }
         ]
       },
+      ?WARNING_MSG("prepare for step ~p", [Step]),
       %% then broadcast result previous question and new question
       List = player_store:match_object({Slug, '_', '_'}),
       lists:foreach(fun({_, Player, Resource}) ->
@@ -460,14 +492,14 @@ push_right_answer(Slug, Player, HitTime) ->
   end,
   mnesia:transaction(Fun).
 
-pop_right_answer(Slug) ->
+get_right_answers(Slug) ->
   case mnesia:dirty_read(answer1state, Slug) of
     [] ->
-      [];
+      queue:new();
     [E] ->
       E#answer1state.rightqueue;
     _ ->
-      []
+      queue:new()
   end. 
 
 %% push wrong answer
@@ -491,14 +523,14 @@ push_wrong_answer(Slug, Player, HitTime) ->
   end,
   mnesia:transaction(Fun).
 
-pop_wrong_answer(Slug) ->
+get_wrong_answers(Slug) ->
   case mnesia:dirty_read(answer0state, Slug) of
     [] ->
-      [];
+      queue:new();
     [E] ->
       E#answer0state.wrongqueue;
     _ ->
-      []
+      queue:new()
   end.
 
 %% result of previous question
@@ -512,12 +544,15 @@ result_previous_question(Slug, Final, Questions, Step) ->
   ?WARNING_MSG("result for step ~p, final ~p, total ~p",
       [Step-1, Final, Questions]),
 
-  
-  SortedL1 = pop_right_answer(Slug),
-  SortedL0 = pop_wrong_answer(Slug),
-  PosRanking = positive_scores(SortedL1, Final, [], 1),
-  Ranking = negative_scores(SortedL0, Final, PosRanking, 1),
-  PlayersTag = update_score(Ranking),
+  SortedQ1 = get_right_answers(Slug),
+  ?WARNING_MSG("SortedQ1 ~p", [SortedQ1]),
+  SortedQ0 = get_wrong_answers(Slug),
+  ?WARNING_MSG("SortedQ0 ~p", [SortedQ0]),
+  PosRanking = positive_scores(SortedQ1, Final, [], 1),
+  ?WARNING_MSG("positive_scores: ~p", [PosRanking]),
+  Ranking = negative_scores(SortedQ0, Final, PosRanking, 1),
+  ?WARNING_MSG("negative_scores: ~p", [Ranking]),
+  PlayersTag = update_score(Ranking, []),
   %% who don't give answer, dont change his score
   mnesia:clear_table(answer1state),
   mnesia:clear_table(answer0state),
@@ -628,19 +663,37 @@ get_hittime(Stamp) ->
       0
   end.
 
-positive_scores([], _, Ret, _) ->
-  Ret;
-positive_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
-  Score = Final / Position,
-  NewRet = [{Player, HitTime, Score, Position}|Ret],
-  positive_scores([Tail], Final, NewRet, Position+1).
+positive_scores(Queue, Final, Ret, Position) ->
+  case queue:is_empty(Queue) of
+    true ->
+      Ret;
+    false ->
+      Score = Final / Position,
+      {{value, {Player, HitTime}}, Tail} = queue:out(Queue),
+      Add = {Player,
+          HitTime,
+          erlang:round(Score),
+          Position},
+      positive_scores(Tail, Final, [Add|Ret], Position+1);
+    _ ->
+      Ret
+  end.
 
-negative_scores([], _, Ret, Position) ->
-  Ret;
-negative_scores([{Player, HitTime}|Tail], Final, Ret, Position) ->
-  Score = Final / (Position * -2),
-  NewRet = [{Player, HitTime, Score, Position}|Ret],
-  negative_scores([Tail], Final, NewRet, Position+1).
+negative_scores(Queue, Final, Ret, Position) ->
+  case queue:is_empty(Queue) of
+    true ->
+      Ret;
+    false ->
+      Score = Final / (Position * -2),
+      {{value, {Player, HitTime}}, Tail} = queue:out(Queue),
+      Add = {Player,
+          HitTime,
+          erlang:round(Score),
+          Position},
+      negative_scores(Tail, Final, [Add|Ret], Position+1);
+    _ ->
+      Ret
+  end.
 
 update_score([], Ret) ->
   Ret;
@@ -668,7 +721,7 @@ questionranking_player_tag(Nickname, Time, Pos, Score) ->
       [{"nickname", Nickname},
        {"score", erlang:integer_to_list(Score)},
        {"pos", erlang:integer_to_list(Pos)},
-       {"time",erlang:integer_to_list(Time)},
+       {"time", erlang:integer_to_list(Time)}
       ],
       []
   }.
