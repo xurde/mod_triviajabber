@@ -75,16 +75,18 @@ lissn.chat={
       var qId = $(data).attr('id');
       $("#trackanswer").text(qId);
     } else if (restype === "ranking") {
-      $("#question-ranking").text(data);
+      $(".question-ranking").text(data);
     } else
       $(".response-log").text(data);
   },
 
   rawOutput:function(data) {
     var anstype = $(data).attr('type');
-    if (anstype === "answer")
+    if (anstype === "answer") {
       $(".answer-log").text(data);
-    else
+    } else if (anstype === "ranking") {
+      $(".game-ranking").text(data);
+    } else
       $(".request-log").text(data);
   },
 

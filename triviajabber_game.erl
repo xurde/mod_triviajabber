@@ -549,10 +549,9 @@ result_previous_question(Slug, Final, Questions, Step) ->
   SortedQ0 = get_wrong_answers(Slug),
   ?WARNING_MSG("SortedQ0 ~p", [SortedQ0]),
   PosRanking = positive_scores(SortedQ1, Final, [], 1),
-  ?WARNING_MSG("positive_scores: ~p", [PosRanking]),
   Ranking = negative_scores(SortedQ0, Final, PosRanking, 1),
-  ?WARNING_MSG("negative_scores: ~p", [Ranking]),
   PlayersTag = update_score(Ranking, []),
+  ?WARNING_MSG("PlayersTag ~p", [PlayersTag]),
   %% who don't give answer, dont change his score
   mnesia:clear_table(answer1state),
   mnesia:clear_table(answer0state),
