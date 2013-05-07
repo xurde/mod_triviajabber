@@ -75,7 +75,12 @@ lissn.chat={
       var qId = $(data).attr('id');
       $("#trackanswer").text(qId);
     } else if (restype === "ranking") {
-      $(".question-ranking").text(data);
+      var ranktag = $(data).find("rank");
+      var rtype = ranktag.attr('type');
+      if (rtype === "question")
+        $(".question-ranking").text(data);
+      else if (rtype === "game")
+        $(".game-ranking").text(data);
     } else
       $(".response-log").text(data);
   },
@@ -84,8 +89,8 @@ lissn.chat={
     var anstype = $(data).attr('type');
     if (anstype === "answer") {
       $(".answer-log").text(data);
-    } else if (anstype === "ranking") {
-      $(".game-ranking").text(data);
+//    } else if (anstype === "ranking") {
+//      $(".game-ranking").text(data);
     } else
       $(".request-log").text(data);
   },

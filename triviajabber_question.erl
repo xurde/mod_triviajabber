@@ -19,14 +19,14 @@ close() ->
   ets:delete_all_objects(?MODULE),
   ets:delete(?MODULE).
 
-insert(Pid, Question, Answer, QuestionId, TimeStamp) ->
-  ets:insert(?MODULE, {Pid, Question, Answer, QuestionId, TimeStamp}),
-  {ok, Pid, Question, Answer, QuestionId, TimeStamp}.
+insert(Pid, Question, AnswerId, QuestionId, TimeStamp) ->
+  ets:insert(?MODULE, {Pid, Question, AnswerId, QuestionId, TimeStamp}),
+  {ok, Pid, Question, AnswerId, QuestionId, TimeStamp}.
 
 lookup(Pid) ->
   case ets:lookup(?MODULE, Pid) of
-    [{Pid, Question, Answer, QuestionId, TimeStamp}] ->
-      {ok, Pid, Question, Answer, QuestionId, TimeStamp};
+    [{Pid, Question, AnswerId, QuestionId, TimeStamp}] ->
+      {ok, Pid, Question, AnswerId, QuestionId, TimeStamp};
     [] ->
       {null, not_found};
     Any ->
