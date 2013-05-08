@@ -224,10 +224,24 @@ do_route(To, From, Packet, State) ->
           TriviajabberDomain = To#jid.server,
           if
             Triviajabber =:= TriviajabberDomain, AnswerType =:= "answer" ->
-              AnswerStr = xml:get_subtag_cdata(Packet, "answer"),
-              triviajabber_game:get_answer(
-                  From#jid.user, To#jid.user,
-                  AnswerStr, QuestionId);
+              AnswerTag = xml:get_subtag(Packet, "answer"),
+              case get_answer_hittime(AnswerTag) of
+                {null, null} ->
+                  ?ERROR_MSG("!!! answer must have id, time", []);
+                {null, _} ->
+                  ?ERROR_MSG("!!! answer must have id", []);
+                {AnswerStr, null} ->
+                  ?WARNING_MSG("!!! answer get server time", []),
+                  triviajabber_game:get_answer(
+                      From#jid.user, To#jid.user,
+                      AnswerStr, "hardcode", QuestionId);
+                {AnswerStr2, AnswerTime} ->
+                  triviajabber_game:get_answer(
+                      From#jid.user, To#jid.user,
+                      AnswerStr2, AnswerTime, QuestionId);
+                Ret ->
+                  ?ERROR_MSG("get_answer_hittime(AnswerTag) = ~p", [Ret])
+              end;
             true ->
               ?WARNING_MSG("~p != ~p", [Triviajabber, TriviajabberDomain])
           end;
@@ -520,3 +534,20 @@ check_player_joined_game(GameId, Player, Resource) ->
       ?WARNING_MSG("~p ? not found ~p/~p in ~p", [Res, Player, Resource, GameId]),
       notfound
   end.
+
+get_answer_hittime(AnswerTag) ->
+  AnswerId = case xml:get_tag_attr("id", AnswerTag) of
+    {value, AnswerStr} ->
+      AnswerStr;
+    Ret1 ->
+      ?ERROR_MSG("get_tag_attr(id) = ~p", [Ret1]),
+      null
+  end,
+  Hittime = case xml:get_tag_attr("time", AnswerTag) of
+    {value, Hit} ->
+      Hit;
+    Ret2 ->
+      ?ERROR_MSG("get_tag_attr(time) = ~p", [Ret2]),
+      null
+  end,
+  {AnswerId, Hittime}.

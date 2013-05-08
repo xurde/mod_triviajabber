@@ -18,7 +18,7 @@
          terminate/2, code_change/3]).
 %% helpers
 -export([take_new_player/7, remove_old_player/1,
-         current_question/1, get_answer/4]).
+         current_question/1, get_answer/5]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -28,6 +28,8 @@
 -define(READY, "no").
 -define(COUNTDOWN, 3000).
 -define(KILLAFTER, 2000).
+-define(DELAYNEXT1, 1500).
+-define(DELAYNEXT2, 3000).
 -define(MODELAY, 1500000).
 -define(COUNTDOWNSTR, "Game is about to start. Please wait for other players to join.").
 
@@ -61,7 +63,7 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
          erlang:length(List) >= MinPlayers ->
            ?WARNING_MSG("new commer fills enough players to start game", []),
            triviajabber_question:insert(self(), 0, null, null, 0),
-           will_send_question(Host, Slug),
+           will_send_question(Host, Slug, Seconds),
            NewState1 = #gamestate{
                host = Host, slug = Slug,
                questions = Questions, seconds = Seconds,
@@ -175,6 +177,43 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       next_question(StrSeconds, Tail, Step + 1),
       {noreply, State}
   end;
+handle_info({rankinggame, List, RankingGame}, #gamestate{
+    host = Host, slug = Slug,
+    pool_id = _PoolId, questions = _Questions,
+    seconds = _StrSeconds, final_players = _Final,
+    started = _Started,
+    minplayers = _MinPlayers} = State) ->
+  ?WARNING_MSG("ranking-game ...", []),
+  broadcast_msg(Host, Slug, List, RankingGame),
+  {noreply, State};
+handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
+    host = Host, slug = Slug,
+    pool_id = _PoolId, questions = _Questions,
+    seconds = StrSeconds, final_players = _Final,
+    started = _Started,
+    minplayers = _MinPlayers} = State) ->
+  MsgId = Slug ++ randoms:get_string(),
+  QLstLen = erlang:length(QLst),
+  OptList = generate_opt_list(QLst, [], QLstLen),
+  QuestionPacket = {xmlelement, "message",
+      [{"type", "question"}, {"id", MsgId}],
+      [{xmlelement, "question",
+          [{"time", StrSeconds}], [{xmlcdata, Qst}]
+       },
+       {xmlelement, "answers",
+          [], OptList
+       }
+      ]
+  },
+  %% reset playersstate.playersets for new question
+  mnesia:clear_table(playersstate),
+  CurrentTime = get_timestamp(),
+  SecretId = find_answer(OptList, Asw),
+  ?WARNING_MSG("nextquestion ~p ... secret(~p) = ~p", [Step, Asw, SecretId]),
+  triviajabber_question:insert(self(), Step, SecretId, MsgId, CurrentTime),
+  List = player_store:match_object({Slug, '_', '_'}),
+  broadcast_msg(Host, Slug, List, QuestionPacket),
+  {noreply, State};
 handle_info(killafter, #gamestate{
     host = Host, slug = Slug,
     pool_id = PoolId, questions = Questions,
@@ -241,7 +280,7 @@ init([Host, Opts]) ->
   Started = if
     MinPlayers =:= 1 ->
       triviajabber_question:insert(self(), 0, null, null, 0),
-      will_send_question(Host, Slug),
+      will_send_question(Host, Slug, Seconds),
       "yes";
     true ->
       triviajabber_question:insert(self(), -1, null, null, 0),
@@ -319,11 +358,12 @@ current_question(Slug) ->
   end.
 
 %% check answer from player
-get_answer(Player, Slug, Answer, QuestionId) ->
+get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
-      ?WARNING_MSG("~p answers ~p(~p): ~p",
-          [Player, Slug, Pid, Answer]),
+      ?WARNING_MSG("~p answers ~p(~p): ~p, client-time ~p",
+          [Player, Slug, Pid, Answer, ClientTime]),
+      %% TODO check client-time
       gen_server:cast(Pid, {answer, Player, Answer, QuestionId});
     {null, not_found, not_found, not_found} ->
       ?ERROR_MSG("there's no process handle ~p", [Slug]);
@@ -337,24 +377,32 @@ get_answer(Player, Slug, Answer, QuestionId) ->
 %%% ------------------------------------
 
 %% send countdown chat message when there are enough players
-will_send_question(Server, Slug) ->
+will_send_question(Server, Slug, StrSeconds) ->
   CountdownPacket = {xmlelement, "message",
      [{"type", "chat"}, {"id", randoms:get_string()}],
      [{xmlelement, "countdown",
-         [{"secs", "30"}],
+         [{"secs", StrSeconds}],
          [{xmlcdata, ?COUNTDOWNSTR}]}]
   },
-  List = player_store:match_object({Slug, '_', '_'}),
-  lists:foreach(
-    fun({_, Player, Resource}) ->
-      To = jlib:make_jid(Player, Server, Resource),
-      GameServer = "triviajabber." ++ Server,
-      From = jlib:make_jid(Slug, GameServer, Slug),
-      ejabberd_router:route(From, To, CountdownPacket)
-    end,
-  List),
-  erlang:send_after(?COUNTDOWN, self(), countdown),
-  ok.
+  case string:to_integer(StrSeconds) of
+    {Seconds, []} ->
+      List = player_store:match_object({Slug, '_', '_'}),
+      lists:foreach(
+        fun({_, Player, Resource}) ->
+          To = jlib:make_jid(Player, Server, Resource),
+          GameServer = "triviajabber." ++ Server,
+          From = jlib:make_jid(Slug, GameServer, Slug),
+          ejabberd_router:route(From, To, CountdownPacket)
+        end,
+      List),
+      erlang:send_after(Seconds * 1000, self(), countdown);
+    {RetSeconds, Reason} ->
+      ?ERROR_MSG("Error1 to convert seconds to integer {~p, ~p}",
+          [RetSeconds, Reason]);
+    Ret ->
+      ?ERROR_MSG("Error1 to convert seconds to integer ~p",
+          [Ret])
+  end.
 
 %% send first question
 send_question(Server, _, _, Slug,
@@ -377,6 +425,7 @@ send_question(Server, _, _, Slug,
       %% set first question,
       CurrentTime = get_timestamp(),
       SecretId = find_answer(OptList, Asw),
+      ?WARNING_MSG("store secret1 ~p", [SecretId]),
       triviajabber_question:insert(self(), 1, SecretId, MsgId, CurrentTime),
       %% broadcast first question
       List = player_store:match_object({Slug, '_', '_'}),
@@ -391,12 +440,11 @@ send_question(Server, _, _, Slug,
   end;
 %% send question to all player in slug
 send_question(Server, Final, Questions, Slug,
-    QuestionId, Seconds, Step) ->
+    QuestionId, _Seconds, Step) ->
   case get_question_info(Server, QuestionId) of
     {ok, Qst, Asw, QLst} ->
       Random = randoms:get_string(),
       
-      %% it's too late to answer, module informs result of previous question.
       PreviousQuestionStep = erlang:integer_to_list(Step-1),
       MsgQId = "ranking-question" ++ Random,
       RankingQuestion = {xmlelement, "message",
@@ -413,12 +461,12 @@ send_question(Server, Final, Questions, Slug,
       List = player_store:match_object({Slug, '_', '_'}),
       %% then broadcast result previous question
       broadcast_msg(Server, Slug, List, RankingQuestion),
-
+      
+      PlayersList = player_store:match_object({Slug, '_', '_'}),
+      RGame = update_scoreboard(PlayersList, []),
+      SortScoreboard = scoreboard_items(RGame, []),
+      ?WARNING_MSG("scoreboard_items ~p", [SortScoreboard]),
       MsgGId = "ranking-game" ++ Random,
-      RGame = get_scoreboard(Slug),
-      RGameSize = erlang:length(RGame),
-      SortScoreboard = sort_scoreboard(RGame, [], RGameSize),
-      ?WARNING_MSG("sort_scoreboard ~p", [SortScoreboard]),
       RankingGame = {xmlelement, "message",
         [{"type", "ranking"}, {"id", MsgGId}],
         [{xmlelement, "rank",
@@ -429,27 +477,12 @@ send_question(Server, Final, Questions, Slug,
          }
         ]
       },
-      broadcast_msg(Server, Slug, List, RankingGame),
-
-      %% replace current question by next question,
-      MsgId = Slug ++ Random,
-      QLstLen = erlang:length(QLst),
-      OptList = generate_opt_list(QLst, [], QLstLen),
-      QuestionPacket = {xmlelement, "message",
-        [{"type", "question"}, {"id", MsgId}],
-        [{xmlelement, "question",
-            [{"time", Seconds}], [{xmlcdata, Qst}]
-         },
-         {xmlelement, "answers",
-            [], OptList
-         }
-        ]
-      },
-      ?WARNING_MSG("prepare for step ~p", [Step]),
-      CurrentTime = get_timestamp(),
-      SecretId = find_answer(OptList, Asw),
-      triviajabber_question:insert(self(), Step, SecretId, MsgId, CurrentTime),
-      broadcast_msg(Server, Slug, List, QuestionPacket);
+      %% delay to return rankinggame
+      erlang:send_after(?DELAYNEXT1, self(),
+          {rankinggame, List, RankingGame}),
+      %% delay to broadcast next question
+      erlang:send_after(?DELAYNEXT2, self(),
+          {nextquestion, QLst, Qst, Step, Asw});
     _ ->
       error
   end.
@@ -590,7 +623,7 @@ result_previous_question(Slug, Final) ->
 next_question(StrSeconds, Tail, Step) ->
   case string:to_integer(StrSeconds) of
     {Seconds, []} ->
-      erlang:send_after(Seconds * 1000 + ?KILLAFTER, self(),
+      erlang:send_after(Seconds * 1000 + ?DELAYNEXT1, self(),
           {questionslist, Tail, Step});
     {RetSeconds, Reason} ->
       ?ERROR_MSG("Error to convert seconds to integer {~p, ~p}",
@@ -625,10 +658,10 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
   %% then broadcast result previous question
   broadcast_msg(Server, Slug, List, RankingQuestion),
   MsgGId = "ranking-game" ++ Random,
-  RGame = get_scoreboard(Slug),
-  RGameSize = erlang:length(RGame),
-  SortScoreboard = sort_scoreboard(RGame, [], RGameSize),
-  ?WARNING_MSG("sort_scoreboard0 ~p", [SortScoreboard]),
+  PlayersList = player_store:match_object({Slug, '_', '_'}),
+  RGame = update_scoreboard(PlayersList, []),
+  SortScoreboard = scoreboard_items(RGame, []),
+  ?WARNING_MSG("scoreboard_items0 ~p", [SortScoreboard]),
   RankingGame = {xmlelement, "message",
       [{"type", "ranking"}, {"id", MsgGId}],
       [{xmlelement, "rank",
@@ -775,7 +808,7 @@ update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
         player = Player,
         score = GameScore
       }),
-      ?WARNING_MSG("update_score(~p, ~p)", [Player, Score]),
+      ?WARNING_MSG("update_score(~p, ~p) = ~p", [Player, Score, GameScore]),
       AddTag = questionranking_player_tag(
           Player, Time, Pos, Score),
       update_score(Tail, [AddTag|Ret]);
@@ -784,37 +817,27 @@ update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
       update_score(Tail, Ret)
   end.
 
-get_scoreboard(Slug) ->
-  %% TODO: get scoreboard
-  GameRanking = case mnesia:dirty_read(playersstate, Slug) of
+%% get all players from player_store,
+%% we reset playersstate, player can answer new question.
+%% So we cant get all players by playersstate.playersets
+update_scoreboard([], Ret) ->
+  lists:keysort(2, Ret);
+update_scoreboard([Head|Tail], Acc) ->
+  {_Slug, Player, _Resource} = Head,
+  Add = case mnesia:dirty_read(scoresstate, Player) of
     [] ->
-      [];
-    [E] ->
-      Playersets = E#playersstate.playersets,
-      AllPlayers = sets:fold(
-        fun(Player, Acc) ->
-          Add = case mnesia:dirty_read(scoresstate, Player) of
-            [] ->
-              ?WARNING_MSG("dirty_read(scoresstate): didnt see ~p",
-                  [Player]),
-              {Player, 0};
-            [E2] ->
-              Score = E2#scoresstate.score,
-              {Player, Score};
-            Ret2 ->
-              ?ERROR_MSG("dirty_read(scoresstate): ~p", [Ret2]),
-              {Player, 0}
-          end,
-          [Add|Acc]
-        end,
-      [], Playersets),
-      lists:keysort(2, AllPlayers);
-    Ret ->
-      ?ERROR_MSG("dirty_read(playersstate): ~p", [Ret]), 
-      []
+      ?WARNING_MSG("dirty_read(scoresstate): didnt see ~p",
+          [Player]),
+      {Player, 0};
+    [E2] ->
+      Score = E2#scoresstate.score,
+      {Player, Score};
+    Ret2 ->
+      ?ERROR_MSG("dirty_read(scoresstate): ~p", [Ret2]),
+      {Player, 0}
   end,
-  mnesia:clear_table(playersstate),
-  GameRanking.
+  ?WARNING_MSG("get_scoreboard : add ~p", [Add]),
+  update_scoreboard(Tail, [Add|Acc]).
 
 questionranking_player_tag(Nickname, Time, Pos, Score) ->
   {xmlelement, "player",
@@ -826,9 +849,9 @@ questionranking_player_tag(Nickname, Time, Pos, Score) ->
       []
   }.
 
-sort_scoreboard([], Ret, _) ->
+scoreboard_items([], Ret) ->
   Ret;
-sort_scoreboard([Head|Tail], Ret, Size) ->
+scoreboard_items([Head|Tail], Ret) ->
   {Player, Score} = Head,
   Add = {xmlelement, "player",
       [{"nickname", Player},
@@ -836,7 +859,7 @@ sort_scoreboard([Head|Tail], Ret, Size) ->
       ],
       []
   },
-  sort_scoreboard(Tail, [Add|Ret], Size-1).
+  scoreboard_items(Tail, [Add|Ret]).
 
 find_answer([], _) ->
   ?ERROR_MSG("!! Not found answer in permutation !!", []),
@@ -846,7 +869,6 @@ find_answer([Head|Tail], Asw) ->
     {xmlelement, "answer",
         [{"id", CountStr}],
         [{xmlcdata, Asw}]} ->
-      ?WARNING_MSG("found answerid = ~p", [CountStr]),
       CountStr;
     _ ->
       find_answer(Tail, Asw)

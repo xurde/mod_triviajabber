@@ -205,8 +205,12 @@ lissn.chat={
   answer_msg: function(myans, slug) {
     var qId = $("#trackanswer").text();
     var toSlug = slug + "@triviajabber."+lissn.chat.domainName;
+    var answer_attr = {
+      "id": myans,
+      "time": "3333"
+    };
     var answer_msg = $msg({to: toSlug, "type": "answer", "id": qId})
-        .c("answer").t(myans);
+        .c("answer", answer_attr);
 
     lissn.chat.connection.send(answer_msg);
   }
