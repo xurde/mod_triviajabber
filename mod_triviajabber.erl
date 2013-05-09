@@ -479,7 +479,6 @@ game_items(Items, GameService) ->
       {ok, QuestionId} ->
         {xmlelement, "game",
           [{"name", Name}, {"jid", Jid},
-%% BUG: should show string, not number QuestionId
            {"topic", Topic}, {"question", erlang:integer_to_list(QuestionId)},
            {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],

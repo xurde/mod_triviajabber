@@ -4,6 +4,7 @@ lissn.chat={
   connection:   null,
   jid:"",
   features:     null,
+  startquestion: 0,
   appName:      'sixclicks',
   domainName: 'dev.triviapad.com',
   conference:'rooms.dev.triviapad.com',
@@ -71,6 +72,7 @@ lissn.chat={
   rawInput:function(data) {
     var restype = $(data).attr('type');
     if (restype === "question") {
+      lissn.chat.startquestion = new Date().getTime();
       $(".question-log").text(data);
       var qId = $(data).attr('id');
       $("#trackanswer").text(qId);
@@ -203,11 +205,12 @@ lissn.chat={
   },
 
   answer_msg: function(myans, slug) {
+    var hittime = new Date().getTime() - lissn.chat.startquestion;
     var qId = $("#trackanswer").text();
     var toSlug = slug + "@triviajabber."+lissn.chat.domainName;
     var answer_attr = {
       "id": myans,
-      "time": "3333"
+      "time": hittime
     };
     var answer_msg = $msg({to: toSlug, "type": "answer", "id": qId})
         .c("answer", answer_attr);

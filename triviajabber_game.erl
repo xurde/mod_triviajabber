@@ -26,11 +26,9 @@
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
 -define(READY, "no").
--define(COUNTDOWN, 3000).
 -define(KILLAFTER, 2000).
 -define(DELAYNEXT1, 1500).
 -define(DELAYNEXT2, 3000).
--define(MODELAY, 1500000).
 -define(COUNTDOWNSTR, "Game is about to start. Please wait for other players to join.").
 
 -record(gamestate, {host, slug, pool_id,
@@ -93,26 +91,51 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
 handle_cast({left, Slug}, State) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p, state ~p", [self(), Slug, State]),
   {noreply, State};
-handle_cast({answer, Player, Answer, QuestionId}, #gamestate{
+handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     host = _Host, slug = Slug,
-    questions = _Questions, seconds = _StrSeconds,
+    questions = _Questions, seconds = StrSeconds,
     pool_id = _PoolId, final_players = _Final,
     started = _Started, minplayers = _MinPlayers} = State) ->
   case onetime_answer(Slug, Player) of
     {atomic, true} ->
-      case triviajabber_question:lookup(self()) of
-        {ok, _Pid, _Question, Answer, QuestionId, Stamp1} ->
-          HitTime = get_hittime(Stamp1),
-          %% push into true queue
-          push_right_answer(Slug, Player, HitTime);
-        {ok, _Pid, _Question, A1, QuestionId, Stamp0} ->
-          ?WARNING_MSG("wrong answer. Correct: ~p", [A1]),
-          HitTime0 = get_hittime(Stamp0),
-          %% push into wrong queue
-          push_wrong_answer(Slug, Player, HitTime0);
-        {ok, _, Q2, A2, QId2, _} ->
-          ?WARNING_MSG("late answer, currently ~p, ~p, ~p",
-              [Q2, A2, QId2]);
+      case triviajabber_question:match_object(
+          {self(), '_', '_', QuestionId, '_'}) of
+        [{_Pid, _Question, Answer, QuestionId, Stamp1}] ->
+          case reasonable_hittime(Stamp1, ClientTime, StrSeconds) of
+            "toolate" ->
+              ?ERROR_MSG("late to give right answer", []);
+            "error" ->
+              ?ERROR_MSG("reasonable_hittime1 ERROR", []);
+            {HitTimeY, reset} ->
+              ?WARNING_MSG("(RR) right answer. hittime ~p",
+                  [HitTimeY]),
+              onetime_delelement(Slug, Player),
+              %% push into true queue
+              push_right_answer(Slug, Player, HitTimeY);
+            {HitTimeX, no} ->
+              ?WARNING_MSG("(RN) right answer. hittime ~p",
+                  [HitTimeX]),
+              %% push into true queue
+              push_right_answer(Slug, Player, HitTimeX)
+          end;
+        [{_Pid, _Question, A1, QuestionId, Stamp0}] ->
+          case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
+            "toolate" ->
+              ?ERROR_MSG("late to give right answer", []);
+            "error" ->
+              ?ERROR_MSG("reasonable_hittime2 ERROR", []);
+            {HitTime0X, reset} ->
+              ?WARNING_MSG("(WR) wrong answer. Correct: ~p. hittime ~p",
+                  [A1, HitTime0X]),
+              onetime_delelement(Slug, Player),
+              %% push into wrong queue
+              push_wrong_answer(Slug, Player, HitTime0X);
+            {HitTime0Y, no} ->
+              ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
+                  [A1, HitTime0Y]),
+              %% push into wrong queue
+              push_wrong_answer(Slug, Player, HitTime0Y)
+          end;
         Ret ->
           ?WARNING_MSG("~p answered uncorrectly: ~p",
               [Player, Ret])
@@ -361,10 +384,17 @@ current_question(Slug) ->
 get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
-      ?WARNING_MSG("~p answers ~p(~p): ~p, client-time ~p",
-          [Player, Slug, Pid, Answer, ClientTime]),
-      %% TODO check client-time
-      gen_server:cast(Pid, {answer, Player, Answer, QuestionId});
+      %% TODO: convert ClientTime to integer
+      case string:to_integer(ClientTime) of
+        {ClientInt, []} ->
+          gen_server:cast(Pid, {answer, Player, Answer, QuestionId, ClientInt});
+        {RetSeconds, Reason} ->
+          ?ERROR_MSG("Error3 to convert seconds to integer {~p, ~p}",
+              [RetSeconds, Reason]);
+        Ret ->
+          ?ERROR_MSG("Error3 to convert seconds to integer ~p",
+              [Ret])
+      end;
     {null, not_found, not_found, not_found} ->
       ?ERROR_MSG("there's no process handle ~p", [Slug]);
     Error ->
@@ -504,6 +534,20 @@ broadcast_msg(Server, Slug, List, Packet) ->
     From = jlib:make_jid(Slug, GameServer, Slug),
     ejabberd_router:route(From, To, Packet)
   end, List).
+
+onetime_delelement(Slug, Player) ->
+  Fun = fun() ->
+    case mnesia:read(playersstate, Slug) of
+      [] ->
+        ?ERROR_MSG("onetime_delelement: slug ~p is empty", [Slug]);
+      [E] ->
+        Playersets = E#playersstate.playersets,
+        sets:del_element(Player, Playersets);
+      Ret ->
+        ?ERROR_MSG("onetime_delelement: slug ~p, error ~p", [Slug, Ret])
+    end
+  end,
+  mnesia:transaction(Fun).
 
 %% check one answer for one player
 onetime_answer(Slug, Player) ->
@@ -748,15 +792,48 @@ get_question_info(Server, QuestionId) ->
 
 get_timestamp() ->
   {Mega,Sec,Micro} = erlang:now(),
-  (Mega*1000000+Sec)*1000000+Micro.
+  MegaSeconds = (Mega*1000000+Sec)*1000000+Micro,
+  MegaSeconds div 1000.
 
-get_hittime(Stamp) ->
-  CurrentTime = get_timestamp(),
-  if
-    CurrentTime - Stamp > ?MODELAY ->
-      CurrentTime - Stamp - ?MODELAY;
-    true ->
-      0
+reasonable_hittime(ServerStamp, ClientTime, StrSeconds) ->
+  case string:to_integer(StrSeconds) of
+    {Seconds, []} ->
+      ServerTime = get_timestamp() - ServerStamp,
+      Gap = ServerTime - ClientTime,
+      if
+        Gap > 0, Gap < ?DELAYNEXT2 ->
+          Reset = if
+            ServerTime >= Seconds*1000 ->
+              reset;
+            true ->
+              no
+          end,
+          %% ClientTime is less than ServerTime,
+          %% but it's reasonable.
+          ?WARNING_MSG("server ~p, reasonable ~p, reset?~p",
+              [ServerTime, ClientTime, Reset]),
+          {ClientTime, Reset};
+        Gap > 0 ->
+          %% ClientTime is too small,
+          %% it's unreasonable.
+          if
+            ServerTime > Seconds + ?DELAYNEXT2 ->
+              "toolate";
+            true ->           
+              {ServerTime, no}
+          end;
+        true ->
+          ?WARNING_MSG("How servertime < clienttime???", []),
+          {ServerTime, no}
+      end;
+    {RetSeconds, Reason} ->
+      ?ERROR_MSG("Error1 to convert seconds to integer {~p, ~p}",
+          [RetSeconds, Reason]),
+      "error";
+    Ret ->
+      ?ERROR_MSG("Error2 to convert seconds to integer ~p",
+          [Ret]),
+      "error"
   end.
 
 positive_scores(Queue, Final, Ret, Position) ->

@@ -10,7 +10,8 @@
 -module(triviajabber_question).
 -author('od06@htklabs.com').
 
--export([init/0, close/0, insert/5, delete/1, lookup/1]).
+-export([init/0, close/0, insert/5, delete/1,
+         lookup/1, match_object/1]).
 
 init() ->
   ets:new(?MODULE, [public, named_table]).
@@ -32,6 +33,9 @@ lookup(Pid) ->
     Any ->
       {error, Any}
   end.
+
+match_object(Pattern) ->
+  ets:match_object(?MODULE, Pattern).
 
 delete(Pid) ->
   ets:delete(?MODULE, Pid).
