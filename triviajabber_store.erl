@@ -27,9 +27,9 @@ lookup(Slug) ->
     [{Slug, PoolId, Pid}] ->
       {ok, Slug, PoolId, Pid};
     [] ->
-      {null, not_found, not_found, not_found};
+      {null, not_found};
     Any ->
-      {error, lookup, Slug, Any}
+      {error, triviajabber_store_lookup, Slug, Any}
   end.
 
 delete(Slug) ->

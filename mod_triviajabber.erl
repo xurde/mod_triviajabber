@@ -35,8 +35,7 @@
 
 -define(PROCNAME, ejabberd_mod_triviajabber).
 -define(DEFAULT_MINPLAYERS, 1).
--define(DEFAULT_GAME_SERVICE, "triviajabber").
--define(DEFAULT_ROOM_SERVICE, "rooms").
+-define(DEFAULT_GAME_SERVICE, "triviajabber.").
 -define(JOIN_EVENT_NODE, "join_game").
 -define(LEAVE_EVENT_NODE, "leave_game").
 
@@ -107,7 +106,7 @@ init([Host, Opts]) ->
   ServiceName = proplists:get_value(gameservice, Opts, ?DEFAULT_GAME_SERVICE),
   MinPlayers = proplists:get_value(minplayers, Opts, ?DEFAULT_MINPLAYERS),
   ?WARNING_MSG("Service name ~p, Host ~p, Min ~p", [ServiceName, Host, MinPlayers]),
-  Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ ".@HOST@"),
+  Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ "@HOST@"),
   ejabberd_hooks:add(sm_remove_connection_hook, Host,
                                ?MODULE, user_offline, 100),
   ejabberd_hooks:add(unset_presence_hook, Host,
@@ -220,7 +219,7 @@ do_route(To, From, Packet, State) ->
         "message" ->
           QuestionId = xml:get_attr_s("id", Attrs),
           AnswerType = xml:get_attr_s("type", Attrs),
-          Triviajabber = ?DEFAULT_GAME_SERVICE ++ "." ++ From#jid.server,
+          Triviajabber = ?DEFAULT_GAME_SERVICE ++ From#jid.server,
           TriviajabberDomain = To#jid.server,
           if
             Triviajabber =:= TriviajabberDomain, AnswerType =:= "answer" ->

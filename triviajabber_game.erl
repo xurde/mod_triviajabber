@@ -22,9 +22,11 @@
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
+-include("mod_muc/mod_muc_room.hrl").
 
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
+-define(DEFAULT_ROOM_SERVICE, "rooms.").
 -define(READY, "no").
 -define(KILLAFTER, 2000).
 -define(DELAYNEXT1, 1500).
@@ -38,6 +40,8 @@
 -record(answer0state, {slug, wrongqueue}).
 -record(playersstate, {slug, playersets}). 
 -record(scoresstate, {player, score}).
+%% Copied from mod_muc/mod_muc.erl
+-record(muc_online_room, {name_host, pid}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
@@ -331,7 +335,7 @@ take_new_player(Host, Slug, PoolId, Player,
       ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
       gen_server:cast(Pid, {joined, Slug, PoolId, Player}),
       ok;
-    {null, not_found, not_found, not_found} ->
+    {null, not_found} ->
       Opts = [{slug, Slug}, {pool_id, PoolId},
               {questions, Questions}, {seconds, Seconds},
               {player, Player}, {minplayers, MinPlayers}],
@@ -408,6 +412,9 @@ get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
 
 %% send countdown chat message when there are enough players
 will_send_question(Server, Slug, StrSeconds) ->
+  %% DEBUG: get all participants in MUC
+  Participants = get_room_occupants(Server, Slug),
+  ?WARNING_MSG("get_room_occupants = ~p", [Participants]),
   CountdownPacket = {xmlelement, "message",
      [{"type", "chat"}, {"id", randoms:get_string()}],
      [{xmlelement, "countdown",
@@ -950,3 +957,25 @@ find_answer([Head|Tail], Asw) ->
     _ ->
       find_answer(Tail, Asw)
   end.
+
+%% get all participants in MUC
+get_room_occupants(Server, RoomName) ->
+    MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
+    ?WARNING_MSG("RoomName ~p, MucService ~p", [RoomName, MucService]),
+    StateData = get_room_state(RoomName, MucService),
+%%    [{U#user.jid, U#user.nick, U#user.role}
+    [U#user.jid
+     || {_, U} <- ?DICT:to_list(StateData#state.users)].
+
+get_room_state(RoomName, MucService) ->
+    case mnesia:dirty_read(muc_online_room, {RoomName, MucService}) of
+        [R] ->
+            RoomPid = R#muc_online_room.pid,
+            get_room_state(RoomPid);
+        [] ->
+            #state{}
+    end.
+
+get_room_state(RoomPid) ->
+    {ok, R} = gen_fsm:sync_send_all_state_event(RoomPid, get_state),
+    R.
