@@ -18,15 +18,14 @@
          terminate/2, code_change/3]).
 %% helpers
 -export([take_new_player/7, remove_old_player/1,
-         current_question/1, get_answer/5]).
+         current_question/1, get_answer/5,
+         current_status/1]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
--include("mod_muc/mod_muc_room.hrl").
 
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
--define(DEFAULT_ROOM_SERVICE, "rooms.").
 -define(READY, "no").
 -define(KILLAFTER, 2000).
 -define(DELAYNEXT1, 1500).
@@ -40,8 +39,6 @@
 -record(answer0state, {slug, wrongqueue}).
 -record(playersstate, {slug, playersets}). 
 -record(scoresstate, {player, score}).
-%% Copied from mod_muc/mod_muc.erl
--record(muc_online_room, {name_host, pid}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
@@ -156,6 +153,19 @@ handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
 
+handle_call(gamestatus, _From, #gamestate{
+    host = _Host, slug = _Slug,
+    questions = Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = Final,
+    started = _Started, minplayers = _MinPlayers} = State) ->
+  case triviajabber_question:lookup(self()) of
+    {ok, _, Q, _, _, _} ->
+      QuestionNumStr = erlang:integer_to_list(Q),
+      FinalStr = erlang:integer_to_list(Final),     
+      {reply, {ok, QuestionNumStr, Questions, FinalStr}, State};
+    Any ->
+      {reply, Any, State}
+  end;
 %% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
@@ -374,11 +384,32 @@ current_question(Slug) ->
       case triviajabber_question:lookup(Pid) of
         {ok, _Pid, Question, _Answer, _QuestionId, _Time} ->
           {ok, Question};
+        {null, not_found} ->
+          {null, notfound};
         Ret ->
           {error, Ret}
       end;
     {null, not_found} ->
       {failed, null};
+    Error ->
+      ?ERROR_MSG("find pid of slug ~p: ~p", [Slug, Error]),
+      {error, Error}
+  end.
+
+current_status(Slug) ->
+  case triviajabber_store:lookup(Slug) of
+    {ok, Slug, _PoolId, Pid} ->
+      try
+        {ok, Question, Total, Players} =
+            gen_server:call(Pid, gamestatus),
+        {ok, Question, Total, Players}
+      catch
+        EClass:Exc ->
+          ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+          {exception, EClass, Exc}
+      end;
+    {null, not_found} ->
+      {failed, noprocess};
     Error ->
       ?ERROR_MSG("find pid of slug ~p: ~p", [Slug, Error]),
       {error, Error}
@@ -412,9 +443,6 @@ get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
 
 %% send countdown chat message when there are enough players
 will_send_question(Server, Slug, StrSeconds) ->
-  %% DEBUG: get all participants in MUC
-  Participants = get_room_occupants(Server, Slug),
-  ?WARNING_MSG("get_room_occupants = ~p", [Participants]),
   CountdownPacket = {xmlelement, "message",
      [{"type", "chat"}, {"id", randoms:get_string()}],
      [{xmlelement, "countdown",
@@ -958,24 +986,3 @@ find_answer([Head|Tail], Asw) ->
       find_answer(Tail, Asw)
   end.
 
-%% get all participants in MUC
-get_room_occupants(Server, RoomName) ->
-    MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
-    ?WARNING_MSG("RoomName ~p, MucService ~p", [RoomName, MucService]),
-    StateData = get_room_state(RoomName, MucService),
-%%    [{U#user.jid, U#user.nick, U#user.role}
-    [U#user.jid
-     || {_, U} <- ?DICT:to_list(StateData#state.users)].
-
-get_room_state(RoomName, MucService) ->
-    case mnesia:dirty_read(muc_online_room, {RoomName, MucService}) of
-        [R] ->
-            RoomPid = R#muc_online_room.pid,
-            get_room_state(RoomPid);
-        [] ->
-            #state{}
-    end.
-
-get_room_state(RoomPid) ->
-    {ok, R} = gen_fsm:sync_send_all_state_event(RoomPid, get_state),
-    R.

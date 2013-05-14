@@ -29,6 +29,7 @@
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include("adhoc.hrl").
+-include("mod_muc/mod_muc_room.hrl").
 -include_lib("qlc.hrl").
 
 %% Helpers
@@ -36,10 +37,14 @@
 -define(PROCNAME, ejabberd_mod_triviajabber).
 -define(DEFAULT_MINPLAYERS, 1).
 -define(DEFAULT_GAME_SERVICE, "triviajabber.").
+-define(DEFAULT_ROOM_SERVICE, "rooms.").
 -define(JOIN_EVENT_NODE, "join_game").
 -define(LEAVE_EVENT_NODE, "leave_game").
+-define(STATUS_NODE, "status_game").
 
 -record(sixclicksstate, {host, route, minplayers = ?DEFAULT_MINPLAYERS}).
+%% Copied from mod_muc/mod_muc.erl
+-record(muc_online_room, {name_host, pid}).
 
 %%==============================================================
 %% API
@@ -194,7 +199,7 @@ do_route(To, From, Packet, State) ->
           case jlib:iq_query_info(Packet) of
             #iq{type = get, xmlns = ?NS_DISCO_ITEMS} = IQ ->
               spawn(?MODULE, iq_disco_items,
-                  [From, To, IQ]); %% TODO: fill arguments
+                  [From, To, IQ]);
             #iq{type = set, xmlns = ?NS_COMMANDS} = IQ ->
               Res = case iq_command(From, To, IQ, State) of
                       {error, Error} ->
@@ -303,20 +308,31 @@ adhoc_request(_From, _To, Other, _State) ->
 handle_request(#adhoc_request{node = Command} = Request,
     From, _SixClicks, Options, State) ->
   {Items, Message} = execute_command(Command, From, Options, State),
-  Result =
-    {xmlelement, "x",
-      [{"xmlns", ?NS_XDATA}, {"type", "result"}],
-      [{xmlelement, "title", [], [{xmlcdata, Message}]},
-       {xmlelement,"item", Items,
-            [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
-       }
-      ]
-    },
+  Result = case Command of
+    ?STATUS_NODE ->
+      {xmlelement, "x",
+        [{"xmlns", ?NS_XDATA}, {"type", "result"}],
+        [{xmlelement, "title", [], [{xmlcdata, Message}]},
+         {xmlelement, "status", Items, []}
+        ]
+      };
+    _ ->
+      {xmlelement, "x",
+        [{"xmlns", ?NS_XDATA}, {"type", "result"}],
+        [{xmlelement, "title", [], [{xmlcdata, Message}]},
+         {xmlelement,"item", Items,
+              [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
+         }
+        ]
+      }
+  end,
   adhoc:produce_response(Request, #adhoc_response{status = completed, elements = [Result]}).
 
 send_initial_form(#adhoc_request{node = EventNode} = Request) ->
  if
-  EventNode =:= ?JOIN_EVENT_NODE; EventNode =:= ?LEAVE_EVENT_NODE ->
+  EventNode =:= ?JOIN_EVENT_NODE;
+      EventNode =:= ?LEAVE_EVENT_NODE;
+      EventNode =:= ?STATUS_NODE ->
     Form =
       {xmlelement, "x",
           [{"xmlns", ?NS_XDATA}, {"type", "form"}],
@@ -401,7 +417,8 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
           ?WARNING_MSG("You have joined this game ~p", [Err]),
           {[{"return", "fail"}, {"desc", GameName}], "You have joined this game"}
       end;
-    {selected, ["name", "slug"], [{OtherName, _OtherId}]} ->
+    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"],
+               [{OtherName, _OtherId, _, _, _}]} ->
       {[{"return", "false"}, {"desc", OtherName}], "Error in database"};
     Reason ->
       ?ERROR_MSG("failed to query sixclicks_rooms ~p", [Reason]),
@@ -422,10 +439,49 @@ execute_command(?LEAVE_EVENT_NODE, From, Options, _State) ->
       {[{"return", "true"}, {"desc", GameId}], "You have left"};
     notfound ->
       {[{"return", "false"}, {"desc", "null"}], "You havent joined game room"}
+  end;
+%% "status game" command
+execute_command(?STATUS_NODE, From, Options,
+    #sixclicksstate{host = Server, minplayers = _MinPlayers}) ->
+  [GameId] = proplists:get_value("game_id", Options),
+  StateData = get_room_state(Server, GameId),
+  case ?DICT:find(jlib:jid_tolower(From),
+      StateData#state.users) of
+    {ok, #user{jid = FoundJid}} ->
+      ?WARNING_MSG("found jid ~p", [FoundJid]),
+      case triviajabber_game:current_status(GameId) of
+        {ok, Question, Total, Players} ->
+          {[{"question", Question}, {"total", Total}, {"players", Players}], "You are participant"};
+        {exception, _, _} ->
+          {[{"return", "false"}, {"desc", "exception"}], "getting status failed"};
+        {failed, noprocess} ->
+          try get_questions_per_game(GameId, Server) of
+            {selected, ["questions_per_game"], []} ->
+              {[{"return", "false"}, {"desc", "sql returns empty"}], "queried questions_per_game"};
+            {selected, ["questions_per_game"], [{GameQuestions}]} ->
+              {[{"question", "-1"}, {"total", GameQuestions}, {"players", "0"}], "You are participant"};
+            Reason ->
+              ?ERROR_MSG("get_questions_per_game(~p) = ~p", [GameId, Reason]),
+              {[{"return", "false"}, {"desc", "sql returns many results"}], "queried questions_per_game"}
+          catch
+            Res3:Desc3 ->
+              ?ERROR_MSG("Exception ~p, ~p", [Res3, Desc3]),
+              {[{"return", "false"}, {"desc", "exception"}], "queried questions_per_game"}
+          end;
+        _ ->
+          {[{"return", "false"}, {"desc", "error"}], "You are participant"}
+      end;
+    Ret ->
+      ?WARNING_MSG("notfound jid of requester ~p: ~p", [From#jid.user, Ret]),
+      {[{"return", "false"}, {"desc", "null"}], "You arent participant"}
   end.
   
 %% Helpers
-
+get_questions_per_game(GameId, Server) ->
+  ejabberd_odbc:sql_query(Server,
+      ["select questions_per_game from sixclicks_rooms "
+       "where slug='", GameId, "'"]
+  ).
 %% Get game name, pool_id, questions_per_game, seconds_per_question
 get_game_room(GameId, Server) ->
   ejabberd_odbc:sql_query(Server,
@@ -549,3 +605,26 @@ get_answer_hittime(AnswerTag) ->
       null
   end,
   {AnswerId, Hittime}.
+
+%% get all participants in MUC
+get_room_occupants(Server, RoomName) ->
+    MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
+    ?WARNING_MSG("RoomName ~p, MucService ~p", [RoomName, MucService]),
+    StateData = get_room_state(Server, RoomName),
+%%    [{U#user.jid, U#user.nick, U#user.role}
+    [U#user.jid
+     || {_, U} <- ?DICT:to_list(StateData#state.users)].
+
+get_room_state(Server, RoomName) ->
+    MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
+    case mnesia:dirty_read(muc_online_room, {RoomName, MucService}) of
+        [R] ->
+            RoomPid = R#muc_online_room.pid,
+            get_room_state(RoomPid);
+        [] ->
+            #state{}
+    end.
+
+get_room_state(RoomPid) ->
+    {ok, R} = gen_fsm:sync_send_all_state_event(RoomPid, get_state),
+    R.

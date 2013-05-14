@@ -50,12 +50,12 @@ lissn.chat={
     
     $("#joingame").click(function(ev) {
       var gameid = $("#gameid").val();
-      lissn.chat.join_game_iq(gameid, true);
+      lissn.chat.join_game_iq(gameid, 'join_game');
     });
 
     $("#leavegame").click(function(ev) {
       var gameid = $("#leavegameid").val();
-      lissn.chat.join_game_iq(gameid, false);
+      lissn.chat.join_game_iq(gameid, 'leave_game');
     });
 
     $("#discoitems").click(function(ev) {
@@ -66,6 +66,16 @@ lissn.chat={
       var answergameid = $("#answergameid").val();
       var gameid = $("#gameid").val();
       lissn.chat.answer_msg(answergameid, gameid);
+    });
+
+    $("#joinmuc").click(function(ev) {
+      var muc = $("#joinmucid").val();
+      lissn.chat.join_muc(muc);
+    });
+
+    $("#statusgame").click(function(ev) {
+      var gameid = $("#statusgameid").val();
+      lissn.chat.join_game_iq(gameid, 'status_game');
     });
   },
 
@@ -126,13 +136,10 @@ lissn.chat={
     //lissn.chat.connection=null;
   },
 
-  join_game_iq: function(game, isJoin) {
-    var event_node = null;
-    if (isJoin) {
-      event_node = 'join_game';
-    } else {
-      event_node = 'leave_game';
-    }
+  join_game_iq: function(game, event_node) {
+//  event_node = 'join_game';
+//  event_node = 'leave_game';
+//  event_node = 'status_game';
     var command_id =lissn.chat.connection.getUniqueId("command");
     var command_attrs = {
         'xmlns': 'http://jabber.org/protocol/commands',
@@ -202,6 +209,14 @@ lissn.chat={
 	.c('show').t('gone');
 
     lissn.chat.connection.send(unavailablePresence);
+  },
+  
+  join_muc: function(muc) {
+    var myarray = lissn.chat.jid.split("@");
+    var mucJid = muc + "@" + lissn.chat.conference + "/" + myarray[0];
+    var mucpre = $pres({to: mucJid})
+        .c('x', {xmlns: Strophe.NS.MUC});
+    lissn.chat.connection.send(mucpre);
   },
 
   answer_msg: function(myans, slug) {
