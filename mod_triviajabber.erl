@@ -23,7 +23,7 @@
          terminate/2, code_change/3]).
 
 %% helpers
--export([iq_disco_items/3,
+-export([iq_disco_items/3, get_room_occupants/2,
          start_link/2]).
 
 -include("ejabberd.hrl").
@@ -308,24 +308,19 @@ adhoc_request(_From, _To, Other, _State) ->
 handle_request(#adhoc_request{node = Command} = Request,
     From, _SixClicks, Options, State) ->
   {Items, Message} = execute_command(Command, From, Options, State),
-  Result = case Command of
+  SubX = case Command of
     ?STATUS_NODE ->
-      {xmlelement, "x",
-        [{"xmlns", ?NS_XDATA}, {"type", "result"}],
-        [{xmlelement, "title", [], [{xmlcdata, Message}]},
-         {xmlelement, "status", Items, []}
-        ]
-      };
+      {xmlelement, "status", Items, []};
     _ ->
-      {xmlelement, "x",
-        [{"xmlns", ?NS_XDATA}, {"type", "result"}],
-        [{xmlelement, "title", [], [{xmlcdata, Message}]},
-         {xmlelement,"item", Items,
-              [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
-         }
-        ]
+      {xmlelement,"item", Items,
+          [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
       }
   end,
+
+  Result = {xmlelement, "x",
+      [{"xmlns", ?NS_XDATA}, {"type", "result"}],
+      [{xmlelement, "title", [], [{xmlcdata, Message}]}, SubX]
+  },
   adhoc:produce_response(Request, #adhoc_response{status = completed, elements = [Result]}).
 
 send_initial_form(#adhoc_request{node = EventNode} = Request) ->
@@ -451,22 +446,28 @@ execute_command(?STATUS_NODE, From, Options,
       ?WARNING_MSG("found jid ~p", [FoundJid]),
       case triviajabber_game:current_status(GameId) of
         {ok, Question, Total, Players} ->
-          {[{"question", Question}, {"total", Total}, {"players", Players}], "You are participant"};
+          {[{"question", Question}, {"total", Total}, {"players", Players}],
+              "You are participant"};
         {exception, _, _} ->
-          {[{"return", "false"}, {"desc", "exception"}], "getting status failed"};
+          {[{"return", "false"}, {"desc", "exception"}],
+              "getting status failed"};
         {failed, noprocess} ->
           try get_questions_per_game(GameId, Server) of
             {selected, ["questions_per_game"], []} ->
-              {[{"return", "false"}, {"desc", "sql returns empty"}], "queried questions_per_game"};
+              {[{"return", "false"}, {"desc", "sql returns empty"}],
+                  "queried questions_per_game"};
             {selected, ["questions_per_game"], [{GameQuestions}]} ->
-              {[{"question", "-1"}, {"total", GameQuestions}, {"players", "0"}], "You are participant"};
+              {[{"question", "-1"}, {"total", GameQuestions}, {"players", "0"}],
+                  "You are participant"};
             Reason ->
               ?ERROR_MSG("get_questions_per_game(~p) = ~p", [GameId, Reason]),
-              {[{"return", "false"}, {"desc", "sql returns many results"}], "queried questions_per_game"}
+              {[{"return", "false"}, {"desc", "sql returns many results"}],
+                  "queried questions_per_game"}
           catch
             Res3:Desc3 ->
               ?ERROR_MSG("Exception ~p, ~p", [Res3, Desc3]),
-              {[{"return", "false"}, {"desc", "exception"}], "queried questions_per_game"}
+              {[{"return", "false"}, {"desc", "exception"}],
+                  "queried questions_per_game"}
           end;
         _ ->
           {[{"return", "false"}, {"desc", "error"}], "You are participant"}
@@ -611,7 +612,6 @@ get_room_occupants(Server, RoomName) ->
     MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
     ?WARNING_MSG("RoomName ~p, MucService ~p", [RoomName, MucService]),
     StateData = get_room_state(Server, RoomName),
-%%    [{U#user.jid, U#user.nick, U#user.role}
     [U#user.jid
      || {_, U} <- ?DICT:to_list(StateData#state.users)].
 

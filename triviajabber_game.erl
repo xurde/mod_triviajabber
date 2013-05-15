@@ -89,9 +89,19 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
   end;
 
 %% when one player has left
-handle_cast({left, Slug}, State) ->
-  ?WARNING_MSG("~p child knows [outcoming] <- ~p, state ~p", [self(), Slug, State]),
-  {noreply, State};
+handle_cast({left, Slug}, #gamestate{
+    host = Host,
+    slug = Slug, pool_id = PoolId,
+    questions = Questions, seconds = Seconds,
+    final_players = Final, started = Started,
+    minplayers = MinPlayers}) ->
+  ?WARNING_MSG("~p child knows [outcoming] <- ~p", [self(), Slug]),
+  NewState =  #gamestate{host = Host,
+      slug = Slug, pool_id = PoolId,
+      questions = Questions, seconds = Seconds,
+      final_players = Final-1, started = Started,
+      minplayers = MinPlayers},
+  {noreply, NewState};
 handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     host = _Host, slug = Slug,
     questions = _Questions, seconds = StrSeconds,
@@ -184,11 +194,13 @@ handle_info(countdown, #gamestate{
           [Slug, PoolId]),
       {stop, normal, State};
     [{UniqueQuestion}] ->
+      send_status(Host, Slug, Final, Questions, 1),
       send_question(Host, Final, Questions,
           Slug, UniqueQuestion, StrSeconds, 1),
       next_question(StrSeconds, [], 1),
       {noreply, State};
     [{Head}|Tail] ->
+      send_status(Host, Slug, Final, Questions, 1),
       send_question(Host, Final, Questions,
           Slug, Head, StrSeconds, 1),
       next_question(StrSeconds, Tail, 2),
@@ -204,11 +216,13 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       finish_game(Host, Slug, PoolId, Final, Step, Questions),
       {stop, normal, State};
     [{LastQuestion}] ->
+      send_status(Host, Slug, Final, Questions, Step),
       send_question(Host, Final, Questions,
           Slug, LastQuestion, StrSeconds, Step),
       next_question(StrSeconds, [], Step + 1),
       {noreply, State};
     [{Head}|Tail] ->
+      send_status(Host, Slug, Final, Questions, Step),
       send_question(Host, Final, Questions,
           Slug, Head, StrSeconds, Step),
       next_question(StrSeconds, Tail, Step + 1),
@@ -468,6 +482,27 @@ will_send_question(Server, Slug, StrSeconds) ->
       ?ERROR_MSG("Error1 to convert seconds to integer ~p",
           [Ret])
   end.
+
+send_status(Server, Slug, Final, Questions, Step) ->
+  List = mod_triviajabber:get_room_occupants(Server, Slug),
+  MsgId = "status-game" ++ randoms:get_string(),
+  WhichQuestion = erlang:integer_to_list(Step),
+  Players = erlang:integer_to_list(Final),
+  Packet = {xmlelement, "message",
+      [{"type", "status"}, {"id", MsgId}],
+      [{xmlelement, "status",
+          [{"question", WhichQuestion},
+           {"total", Questions},
+           {"players", Players}],
+          []
+       }
+      ]
+  },
+  lists:foreach(fun(To) ->
+    GameServer = "triviajabber." ++ Server,
+    From = jlib:make_jid(Slug, GameServer, Slug),
+    ejabberd_router:route(From, To, Packet)
+  end, List).
 
 %% send first question
 send_question(Server, _, _, Slug,
