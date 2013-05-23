@@ -41,8 +41,11 @@
 -define(JOIN_EVENT_NODE, "join_game").
 -define(LEAVE_EVENT_NODE, "leave_game").
 -define(STATUS_NODE, "status_game").
+-define(FIFTY_NODE, "fifty").
 
--record(sixclicksstate, {host, route, minplayers = ?DEFAULT_MINPLAYERS}).
+-record(sixclicksstate, {host, route,
+    fifty, clairvoyance, rollback,
+    minplayers = ?DEFAULT_MINPLAYERS}).
 %% Copied from mod_muc/mod_muc.erl
 -record(muc_online_room, {name_host, pid}).
 
@@ -94,7 +97,7 @@ user_offline(User, Server, Resource, _Status) ->
 remove_player_from_games(Jid) ->
   User = Jid#jid.user,
   Res = Jid#jid.resource,
-  player_store:match_delete({'_', User, Res}).
+  player_store:match_delete({'_', User, Res, '_', '_', '_'}).
 
 %%==============================================================
 %% gen_server callbacks
@@ -110,6 +113,9 @@ remove_player_from_games(Jid) ->
 init([Host, Opts]) ->
   ServiceName = proplists:get_value(gameservice, Opts, ?DEFAULT_GAME_SERVICE),
   MinPlayers = proplists:get_value(minplayers, Opts, ?DEFAULT_MINPLAYERS),
+  Fifty = proplists:get_value(fifty, Opts, 1),
+  Clair = proplists:get_value(clairvoyance, Opts, 1),
+  Rollback = proplists:get_value(rollback, Opts, 1),
   ?WARNING_MSG("Service name ~p, Host ~p, Min ~p", [ServiceName, Host, MinPlayers]),
   Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ "@HOST@"),
   ejabberd_hooks:add(sm_remove_connection_hook, Host,
@@ -118,10 +124,9 @@ init([Host, Opts]) ->
                                ?MODULE, user_offline, 100),
 
   ejabberd_router:register_route(Route),
-  {ok, #sixclicksstate{
-      host = Host,
-      route = Route,
-      minplayers = MinPlayers}
+  {ok, #sixclicksstate{host = Host, route = Route,
+      fifty = Fifty, clairvoyance = Clair,
+      rollback = Rollback, minplayers = MinPlayers}
   }.
 
 %%--------------------------------------------------------------
@@ -202,13 +207,22 @@ do_route(To, From, Packet, State) ->
                   [From, To, IQ]);
             #iq{type = set, xmlns = ?NS_COMMANDS} = IQ ->
               Res = case iq_command(From, To, IQ, State) of
-                      {error, Error} ->
-                        jlib:make_error_reply(Packet, Error);
-                      {result, IQRes} ->
-                        jlib:iq_to_xml(IQ#iq{type = result,
-                                             sub_el = [IQRes]})
-                    end,
+                  {error, Error} ->
+                    jlib:make_error_reply(Packet, Error);
+                  {result, IQRes} ->
+                    jlib:iq_to_xml(IQ#iq{type = result,
+                        sub_el = [IQRes]})
+              end,
               ejabberd_router:route(To, From, Res);
+%            #iq{type = get, xmlns= ?NS_COMMANDS} = IQ ->
+%              GetRes = case iq_command(From, To, IQ, State) of
+%                  {error, Error} ->
+%                    jlib:make_error_reply(Packet, Error);
+%                  {result, IQRes} ->
+%                    jlib:iq_to_xml(IQ#iq{type = result,
+%                        sub_el = [IQRes]})
+%              end,
+%              ejabberd_router:route(To, From, GetRes);
             #iq{} ->
               Err = jlib:make_error_reply(Packet,
                   ?ERR_FEATURE_NOT_IMPLEMENTED),
@@ -311,12 +325,15 @@ handle_request(#adhoc_request{node = Command} = Request,
   SubX = case Command of
     ?STATUS_NODE ->
       {xmlelement, "status", Items, []};
+    ?FIFTY_NODE ->
+      {xmlelement,"item", Items,
+          [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
+      };
     _ ->
       {xmlelement,"item", Items,
           [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
       }
   end,
-
   Result = {xmlelement, "x",
       [{"xmlns", ?NS_XDATA}, {"type", "result"}],
       [{xmlelement, "title", [], [{xmlcdata, Message}]}, SubX]
@@ -327,7 +344,8 @@ send_initial_form(#adhoc_request{node = EventNode} = Request) ->
  if
   EventNode =:= ?JOIN_EVENT_NODE;
       EventNode =:= ?LEAVE_EVENT_NODE;
-      EventNode =:= ?STATUS_NODE ->
+      EventNode =:= ?STATUS_NODE;
+      EventNode =:= ?FIFTY_NODE ->
     Form =
       {xmlelement, "x",
           [{"xmlns", ?NS_XDATA}, {"type", "form"}],
@@ -393,7 +411,9 @@ game_disco_items(Server, GameService) ->
 
 %% "Join game" command
 execute_command(?JOIN_EVENT_NODE, From, Options,
-    #sixclicksstate{host = Server, minplayers = MinPlayers} = _State) ->
+    #sixclicksstate{host = Server,
+    fifty = Fifty, clairvoyance = Clair, rollback = Rollback,
+    minplayers = MinPlayers} = _State) ->
   [GameId] = proplists:get_value("game_id", Options),
   %% check game room in DB
   try get_game_room(GameId, Server) of
@@ -404,9 +424,10 @@ execute_command(?JOIN_EVENT_NODE, From, Options,
       Player = From#jid.user,
       Resource = From#jid.resource,
       %% then cache in player_store
-      case check_player_in_game(Server, MinPlayers,
-          GameId, GamePool, GameQuestions, GameSeconds, Player, Resource) of
+      case check_player_in_game(Server, MinPlayers, GameId,
+          GamePool, GameQuestions, GameSeconds, Player) of
         "ok" ->
+          player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
           {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
         Err ->
           ?WARNING_MSG("You have joined this game ~p", [Err]),
@@ -475,8 +496,26 @@ execute_command(?STATUS_NODE, From, Options,
     Ret ->
       ?WARNING_MSG("notfound jid of requester ~p: ~p", [From#jid.user, Ret]),
       {[{"return", "false"}, {"desc", "null"}], "You arent participant"}
+  end;
+%% "lifeline:fifty" command
+execute_command(?FIFTY_NODE, From, Options,
+    #sixclicksstate{host = Server, minplayers = _MinPlayers}) ->
+  Player = From#jid.user,
+  Resource = From#jid.resource,
+  [GameId] = proplists:get_value("game_id", Options),
+  case triviajabber_game:lifeline_fifty(GameId, Player, Resource) of
+    {failed, Slug, Title} ->
+      {[{"return", "false"}, {"desc", Slug}], Title};
+    {ok, Question, QPhrase, Random1, Random2} ->
+      {Int1Id, Opt1} = Random1,
+      {Int2Id, Opt2} = Random2,
+        %% TODO: set stanza
+      ok;
+    Ret ->
+      ?ERROR_MSG("lifeline_fifty BUG ~p", [Ret]),
+      {[{"return", "false"}, {"desc", Slug}], "lifeline_fifty has bug"}
   end.
-  
+
 %% Helpers
 get_questions_per_game(GameId, Server) ->
   ejabberd_odbc:sql_query(Server,
@@ -529,7 +568,7 @@ add_games(GameService, Group, G, Ret) ->
 game_items(Items, GameService) ->
   lists:map(fun({Name, Questions, Slug, Topic}) ->
     Jid = Slug ++ "@" ++ GameService,
-    PlayersList = player_store:match_object({Slug, '$1', '_'}),
+    PlayersList = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
     PlayersCount = erlang:length(PlayersList),
     case triviajabber_game:current_question(Slug) of
       {ok, QuestionId} ->
@@ -563,26 +602,24 @@ game_items(Items, GameService) ->
 
 %% One account can log in at many resources (devices),
 %% but don't allow them join in one game. They can play in diference room games.
-check_player_in_game(Server, MinPlayers,
-    GameId, GamePool, GameQuestions, GameSeconds,
-    Player, Resource) ->
+check_player_in_game(Server, MinPlayers, GameId,
+    GamePool, GameQuestions, GameSeconds, Player) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
-  case player_store:match_object({GameId, Player, '_'}) of
+  case player_store:match_object({GameId, Player, '_', '_', '_', '_'}) of
     [] ->
-      ?WARNING_MSG("insert new player ~p/~p into ~p", [Player, Resource, GameId]),
-      player_store:insert(GameId, Player, Resource),
+      ?WARNING_MSG("insert new player ~p into ~p", [Player, GameId]),
       triviajabber_game:take_new_player(Server, GameId, GamePool, Player,
           GameQuestions, GameSeconds, MinPlayers),
       "ok";
     Res ->
-      ?WARNING_MSG("find ~p/~p, but see ~p", [Player, Resource, Res]),
+      ?WARNING_MSG("find ~p, but see unexpected ~p", [Player, Res]),
       "joined"
   end.
 %% Check if this player at this resouce has joined game room.
 check_player_joined_game(GameId, Player, Resource) ->
-  case player_store:match_object ({GameId, Player, Resource}) of
-    [{GameId, Player, Resource}] ->
-      player_store:match_delete({GameId, Player, Resource}),
+  case player_store:match_object ({GameId, Player, Resource, '_', '_', '_'}) of
+    [{GameId, Player, Resource, _, _, _}] ->
+      player_store:match_delete({GameId, Player, Resource, '_', '_', '_'}),
       triviajabber_game:remove_old_player(GameId),
       ok;
     Res ->

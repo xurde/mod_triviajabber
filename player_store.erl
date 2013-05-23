@@ -19,9 +19,9 @@ close() ->
   ets:delete_all_objects(?MODULE),
   ets:delete(?MODULE).
 
-insert(Slug, Player, Resource) ->
-  ets:insert(?MODULE, {Slug, Player, Resource}),
-  {ok, Slug, Player, Resource}.
+insert(Slug, Player, Resource, Fifty, Clair, Rollback) ->
+  ets:insert(?MODULE, {Slug, Player, Resource, Fifty, Clair, Rollback}),
+  {ok, Slug, Player, Resource, Fifty, Clair, Rollback}.
 
 match_delete(Pattern) ->
   ets:match_delete(?MODULE, Pattern).

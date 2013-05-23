@@ -10,7 +10,7 @@
 -module(triviajabber_question).
 -author('od06@htklabs.com').
 
--export([init/0, close/0, insert/5, delete/1,
+-export([init/0, close/0, insert/10, delete/1,
          lookup/1, match_object/1]).
 
 init() ->
@@ -20,14 +20,20 @@ close() ->
   ets:delete_all_objects(?MODULE),
   ets:delete(?MODULE).
 
-insert(Pid, Question, AnswerId, QuestionId, TimeStamp) ->
-  ets:insert(?MODULE, {Pid, Question, AnswerId, QuestionId, TimeStamp}),
-  {ok, Pid, Question, AnswerId, QuestionId, TimeStamp}.
+%% DBid is questionId from pool
+insert(Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
+    Opt1, Opt2, Opt3, Opt4) ->
+  ets:insert(?MODULE, {Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
+      Opt1, Opt2, Opt3, Opt4}),
+  {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+      Opt1, Opt2, Opt3, Opt4}.
 
 lookup(Pid) ->
   case ets:lookup(?MODULE, Pid) of
-    [{Pid, Question, AnswerId, QuestionId, TimeStamp}] ->
-      {ok, Pid, Question, AnswerId, QuestionId, TimeStamp};
+    [{Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+        Opt1, Opt2, Opt3, Opt4}] ->
+      {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+          Opt1, Opt2, Opt3, Opt4};
     [] ->
       {null, not_found};
     Any ->

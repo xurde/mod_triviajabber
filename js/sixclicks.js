@@ -77,6 +77,12 @@ lissn.chat={
       var gameid = $("#statusgameid").val();
       lissn.chat.join_game_iq(gameid, 'status_game');
     });
+
+    $("#fifty").click(function(ev) {
+      var slug = $("#gameid").val();
+      console.log("gameid = " + slug);
+      lissn.chat.lifeline_iq(slug, "fifty");
+    });
   },
 
   rawInput:function(data) {
@@ -134,6 +140,30 @@ lissn.chat={
     lissn.chat.connection.flush();
     lissn.chat.connection.disconnect();
     //lissn.chat.connection=null;
+  },
+
+  lifeline_iq: function(gameId, event_node) {
+    var command_id =lissn.chat.connection.getUniqueId("command");
+    var command_attrs = {
+        'xmlns': 'http://jabber.org/protocol/commands',
+        'node' : event_node,
+        'action' : 'execute'
+    };
+    var lifelineIq = $iq({
+      'to': "triviajabber." + lissn.chat.domainName,
+      'from': lissn.chat.connection.jid,
+      'id': command_id,
+      'type': 'set'
+    })
+      .c('command', command_attrs)
+      .c('x', {'xmlns': 'jabber:x:data', 'type': 'submit'})
+      .c('field', {'var': 'game_id'}).c('value').t(gameId);
+
+    command_callback = function(e) {
+      return true;
+    };
+    lissn.chat.connection.addHandler(command_callback, 'jabber:client', 'iq', 'result', command_id, null);
+    lissn.chat.connection.send(lifelineIq.tree());
   },
 
   join_game_iq: function(game, event_node) {

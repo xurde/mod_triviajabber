@@ -19,7 +19,8 @@
 %% helpers
 -export([take_new_player/7, remove_old_player/1,
          current_question/1, get_answer/5,
-         current_status/1]).
+         current_status/1, lifeline_fifty/3,
+         get_question_fifty/2]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -39,6 +40,11 @@
 -record(answer0state, {slug, wrongqueue}).
 -record(playersstate, {slug, playersets}). 
 -record(scoresstate, {player, score}).
+% Using ets has only one record
+%-record(questionstate, {
+%    questionid, question, answerid, timestamp, dbid,
+%    opt1, opt2, opt3, opt4
+%}.
 
 %% when new player has joined game room,
 %% check if there are enough players to start
@@ -57,11 +63,13 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
   
   case Started of
     "no" ->
-       List = player_store:match_object({Slug, '_', '_'}),
+       List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
        if
          erlang:length(List) >= MinPlayers ->
            ?WARNING_MSG("new commer fills enough players to start game", []),
-           triviajabber_question:insert(self(), 0, null, null, 0),
+           triviajabber_question:insert(self(), 0, null, null, 0, null,
+               null, null, null, null),
+         
            will_send_question(Host, Slug, Seconds),
            NewState1 = #gamestate{
                host = Host, slug = Slug,
@@ -109,9 +117,10 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     started = _Started, minplayers = _MinPlayers} = State) ->
   case onetime_answer(Slug, Player) of
     {atomic, true} ->
+% using questionstate
       case triviajabber_question:match_object(
-          {self(), '_', '_', QuestionId, '_'}) of
-        [{_Pid, _Question, Answer, QuestionId, Stamp1}] ->
+          {self(), '_', '_', QuestionId, '_', '_', '_', '_', '_', '_'}) of
+        [{_Pid, _Question, Answer, QuestionId, Stamp1, _, _, _, _, _}] ->
           case reasonable_hittime(Stamp1, ClientTime, StrSeconds) of
             "toolate" ->
               ?ERROR_MSG("late to give right answer", []);
@@ -129,7 +138,7 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               %% push into true queue
               push_right_answer(Slug, Player, HitTimeX)
           end;
-        [{_Pid, _Question, A1, QuestionId, Stamp0}] ->
+        [{_Pid, _Question, A1, QuestionId, Stamp0, _, _, _, _, _}] ->
           case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
             "toolate" ->
               ?ERROR_MSG("late to give right answer", []);
@@ -163,19 +172,40 @@ handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
 
+%% client request game status
 handle_call(gamestatus, _From, #gamestate{
     host = _Host, slug = _Slug,
     questions = Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = Final,
     started = _Started, minplayers = _MinPlayers} = State) ->
   case triviajabber_question:lookup(self()) of
-    {ok, _, Q, _, _, _} ->
+    {ok, _, Q, _, _, _, _QPhrase, _, _, _, _} ->
       QuestionNumStr = erlang:integer_to_list(Q),
       FinalStr = erlang:integer_to_list(Final),     
       {reply, {ok, QuestionNumStr, Questions, FinalStr}, State};
     Any ->
       {reply, Any, State}
   end;
+handle_call({fifty, Player, Resource}, _From, #gamestate{
+    host = _Host, slug = _Slug,
+    questions = Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = Final,
+    started = _Started, minplayers = _MinPlayers} = State) ->
+  Reply = case triviajabber_question:lookup(self()) of
+    {ok, _Pid, Question, AnswerId, _QuestionId, _Time, QPhrase,
+        Opt1, Opt2, Opt3, Opt4} ->
+      if
+        Question > 0 ->
+          {ok, Question, AnswerId, QPhrase, Opt1, Opt2, Opt3, Opt4};
+        true ->
+          {error, invalid_question};
+      end;
+    {null, not_found} ->
+      {null, notfound};
+    Ret ->
+      {error, Ret}
+  end,
+  {reply, Reply, State};
 %% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
@@ -245,7 +275,7 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
     minplayers = _MinPlayers} = State) ->
   MsgId = Slug ++ randoms:get_string(),
   QLstLen = erlang:length(QLst),
-  OptList = generate_opt_list(QLst, [], QLstLen),
+  {OptList, RevertOpts} = generate_opt_list(QLst, [], [], QLstLen),
   QuestionPacket = {xmlelement, "message",
       [{"type", "question"}, {"id", MsgId}],
       [{xmlelement, "question",
@@ -261,8 +291,10 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
   CurrentTime = get_timestamp(),
   SecretId = find_answer(OptList, Asw),
   ?WARNING_MSG("nextquestion ~p ... secret(~p) = ~p", [Step, Asw, SecretId]),
-  triviajabber_question:insert(self(), Step, SecretId, MsgId, CurrentTime),
-  List = player_store:match_object({Slug, '_', '_'}),
+  [Opt1, Opt2, Opt3, Opt4] = RevertOpts,
+  triviajabber_question:insert(self(), Step, SecretId, MsgId, CurrentTime, Qst,
+      Opt1, Opt2, Opt3, Opt4),
+  List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
   broadcast_msg(Host, Slug, List, QuestionPacket),
   {noreply, State};
 handle_info(killafter, #gamestate{
@@ -276,7 +308,7 @@ handle_info(killafter, #gamestate{
     true ->
       ok
   end,
-  recycle_game(self(), Slug),
+%%  recycle_game(self(), Slug),
   {stop, normal, State};
 handle_info(_Info, State) ->
   {noreply, State}.
@@ -330,11 +362,13 @@ init([Host, Opts]) ->
 
   Started = if
     MinPlayers =:= 1 ->
-      triviajabber_question:insert(self(), 0, null, null, 0),
+      triviajabber_question:insert(self(), 0, null, null, 0, null,
+          null, null, null, null),
       will_send_question(Host, Slug, Seconds),
       "yes";
     true ->
-      triviajabber_question:insert(self(), -1, null, null, 0),
+      triviajabber_question:insert(self(), -1, null, null, 0, null,
+          null, null, null, null),
       "no"
   end,
   {ok, #gamestate{
@@ -375,7 +409,7 @@ take_new_player(Host, Slug, PoolId, Player,
 remove_old_player(Slug) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
-      case player_store:match_object({Slug, '_', '_'}) of
+      case player_store:match_object({Slug, '_', '_', '_', '_', '_'}) of
         [] ->
           ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
           %% kill empty slug in 1500 miliseconds
@@ -384,19 +418,66 @@ remove_old_player(Slug) ->
           ?WARNING_MSG("sync notify ~p", [Res]),
           gen_server:cast(Pid, {left, Slug})
       end;
-    {null, not_found, not_found, not_found} ->
+    {null, not_found} ->
       ?ERROR_MSG("there no process to handle ~p", [Slug]),
       ok;
     Error ->
       ?ERROR_MSG("[player left] lookup : ~p", [Error])
   end.
 
-%% get_current_question
+%% Using 50%-lifeline
+lifeline_fifty(Slug, Player, Resource) ->
+  case triviajabber_store:lookup(Slug) of
+    {ok, Slug, _PoolId, Pid} ->
+      case player_store:match_object({Slug, Player, Resource, '_', '_', '_'}) of
+        [{Slug, Player, Resource, Fifty, Clair, Rollback}] ->
+          if
+            Fifty > 0 ->
+              player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
+              player_store:insert(Slug, Player, Resource, Fifty-1, Clair, Rollback),
+              try gen_server:call(Pid, {fifty, Player, Resource}) of
+                {null, notfound} ->
+%                  {[{"return", "false"}, {"desc", Slug}], "question havent been sent"}
+                  {failed, Slug, "question havent been sent"};
+                {error, Res} ->
+%                  {[{"return", "false"}, {"desc", Slug}], "not found question"}
+                  {failed, Slug, "not found question"};
+                {ok, Question, AnswerId, QPhrase, Opt1, Opt2, Opt3, Opt4}
+                  %% TODO: get question from PoolId
+                  {Random1, Random2} = take_two_opts(AnswerId, Opt1, Opt2, Opt3, Opt4),
+                  {ok, Question, QPhrase, Random1, Random2};
+                ErrorRet ->
+                  ?ERROR_MSG("triviajabber_question:lookup ~p", [ErrorRet]),
+%                  {[{"return", "false"}, {"desc", Slug}], "unknown error"}
+                  {failed, Slug, "unknown error"}
+              catch
+                EClass:Exc ->
+                  ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+%                  {[{"return", "false"}, {"desc", Slug}], "exception"}
+                  {failed, Slug, "exception"}
+              end;
+            true ->
+%              {[{"return", "false"}, {"desc", Slug}], "you used 50%-lifeline"}
+              {failed, Slug, "you used 50%-lifeline"}
+          end;
+        Ret ->
+          ?ERROR_MSG("many resources of player joined in game", []),
+%          {[{"return", "false"}, {"desc", Slug}],
+%              "many resources of player joined in game"}
+          {failed, Slug, "many resources of player joined in game"}
+      end;
+    {null, not_found} ->
+%      {[{"return", "false"}, {"desc", Slug}], "game havent started"}
+       {failed, Slug, "game havent started"}
+  end.
+
+% get_current_question
 current_question(Slug) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
       case triviajabber_question:lookup(Pid) of
-        {ok, _Pid, Question, _Answer, _QuestionId, _Time} ->
+        {ok, _Pid, Question, _Answer, _QuestionId, _Time, _QPhrase,
+            _, _, _, _} ->
           {ok, Question};
         {null, not_found} ->
           {null, notfound};
@@ -433,7 +514,6 @@ current_status(Slug) ->
 get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
-      %% TODO: convert ClientTime to integer
       case string:to_integer(ClientTime) of
         {ClientInt, []} ->
           gen_server:cast(Pid, {answer, Player, Answer, QuestionId, ClientInt});
@@ -444,7 +524,7 @@ get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
           ?ERROR_MSG("Error3 to convert seconds to integer ~p",
               [Ret])
       end;
-    {null, not_found, not_found, not_found} ->
+    {null, not_found} ->
       ?ERROR_MSG("there's no process handle ~p", [Slug]);
     Error ->
       ?ERROR_MSG("there's no process handle ~p: ~p",
@@ -465,9 +545,9 @@ will_send_question(Server, Slug, StrSeconds) ->
   },
   case string:to_integer(StrSeconds) of
     {Seconds, []} ->
-      List = player_store:match_object({Slug, '_', '_'}),
+      List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
       lists:foreach(
-        fun({_, Player, Resource}) ->
+        fun({_, Player, Resource, _, _, _}) ->
           To = jlib:make_jid(Player, Server, Resource),
           GameServer = "triviajabber." ++ Server,
           From = jlib:make_jid(Slug, GameServer, Slug),
@@ -511,7 +591,7 @@ send_question(Server, _, _, Slug,
     {ok, Qst, Asw, QLst} ->
       MsgId = Slug ++ randoms:get_string(),
       QLstLen = erlang:length(QLst),
-      OptList = generate_opt_list(QLst, [], QLstLen),
+      {OptList, RevertOpts} = generate_opt_list(QLst, [], [], QLstLen),
       QuestionPacket = {xmlelement, "message",
         [{"type", "question"}, {"id", MsgId}],
         [{xmlelement, "question",
@@ -526,10 +606,12 @@ send_question(Server, _, _, Slug,
       CurrentTime = get_timestamp(),
       SecretId = find_answer(OptList, Asw),
       ?WARNING_MSG("store secret1 ~p", [SecretId]),
-      triviajabber_question:insert(self(), 1, SecretId, MsgId, CurrentTime),
+      [Opt1, Opt2, Opt3, Opt4] = RevertOpts,
+      triviajabber_question:insert(self(), 1, SecretId, MsgId, CurrentTime, Qst,
+          Opt1, Opt2, Opt3, Opt4),
       %% broadcast first question
-      List = player_store:match_object({Slug, '_', '_'}),
-      lists:foreach(fun({_, Player, Resource}) ->
+      List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
+      lists:foreach(fun({_, Player, Resource, _, _, _}) ->
         To = jlib:make_jid(Player, Server, Resource),
         GameServer = "triviajabber." ++ Server,
         From = jlib:make_jid(Slug, GameServer, Slug),
@@ -558,12 +640,11 @@ send_question(Server, Final, Questions, Slug,
         ]
       },
       
-      List = player_store:match_object({Slug, '_', '_'}),
+      List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
       %% then broadcast result previous question
       broadcast_msg(Server, Slug, List, RankingQuestion),
       
-      PlayersList = player_store:match_object({Slug, '_', '_'}),
-      RGame = update_scoreboard(PlayersList, []),
+      RGame = update_scoreboard(List, []),
       SortScoreboard = scoreboard_items(RGame, []),
       ?WARNING_MSG("scoreboard_items ~p", [SortScoreboard]),
       MsgGId = "ranking-game" ++ Random,
@@ -598,7 +679,7 @@ send_question(Server, Final, Questions, Slug,
 %  end, List).
 
 broadcast_msg(Server, Slug, List, Packet) ->
-  lists:foreach(fun({_, Player, Resource}) ->
+  lists:foreach(fun({_, Player, Resource, _, _, _}) ->
     To = jlib:make_jid(Player, Server, Resource),
     GameServer = "triviajabber." ++ Server,
     From = jlib:make_jid(Slug, GameServer, Slug),
@@ -768,12 +849,11 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
       ]
   },
 
-  List = player_store:match_object({Slug, '_', '_'}),
+  List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
   %% then broadcast result previous question
   broadcast_msg(Server, Slug, List, RankingQuestion),
   MsgGId = "ranking-game" ++ Random,
-  PlayersList = player_store:match_object({Slug, '_', '_'}),
-  RGame = update_scoreboard(PlayersList, []),
+  RGame = update_scoreboard(List, []),
   SortScoreboard = scoreboard_items(RGame, []),
   ?WARNING_MSG("scoreboard_items0 ~p", [SortScoreboard]),
   RankingGame = {xmlelement, "message",
@@ -790,7 +870,7 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
   ok.
 
 recycle_game(Pid, Slug) ->
-  player_store:match_delete({Slug, '_', '_'}),
+  player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
   triviajabber_store:delete(Slug),
   triviajabber_question:delete(Pid).
 
@@ -800,14 +880,14 @@ recycle_game(Pid, Slug) ->
 %  {xmlelement, "option", [{"id", "3"}], [{xmlcdata, "White with black dots"}]}
 %  {xmlelement, "option", [{"id", "4"}], [{xmlcdata, "Brown"}]},
 % ]
-generate_opt_list([], Ret, _) ->
-  Ret;
-generate_opt_list([Head|Tail], Ret, Count) ->
+generate_opt_list([], Ret1, Ret2, _) ->
+  {Ret1, Ret2};
+generate_opt_list([Head|Tail], Ret1, Ret2, Count) ->
   CountStr = erlang:integer_to_list(Count),
   AddOne = {xmlelement, "answer",
       [{"id", CountStr}],
       [{xmlcdata, Head}]},
-  generate_opt_list(Tail, [AddOne|Ret], Count-1).
+  generate_opt_list(Tail, [AddOne|Ret1], [Head|Ret2], Count-1).
 
 %% get permutation of question_id from pool
 question_ids(Server, PoolId, Questions) ->
@@ -859,6 +939,76 @@ get_question_info(Server, QuestionId) ->
           [QuestionId, Res2, Desc2]),
       error
   end.
+
+get_question_fifty(Server, QuestionId) ->
+  try ejabberd_odbc:sql_query(Server,
+      ["select question, answer, option1, option2, option3 "
+       "from sixclicks_questions where question_id='", QuestionId, "'"]) of
+    {selected, ["question", "answer", "option1", "option2", "option3"],
+        []} ->
+      ?ERROR_MSG("Query question info: Empty", []),
+      empty;
+    {selected, ["question", "answer", "option1", "option2", "option3"],
+        [{Q, A, O1, O2, O3}]} ->
+      [HeadO| _Tail] = permutation:permute([O1, O2, O3]),
+      {ok, Q, A, HeadO}; %% question, answer, option
+    Res ->
+      ?ERROR_MSG("Query question ~p failed: ~p", [QuestionId, Res]),
+      error
+  catch
+    Res2:Desc2 ->
+      ?ERROR_MSG("Exception when get question (~p) info: ~p, ~p",
+          [QuestionId, Res2, Desc2]),
+      error
+  end.
+
+take_two_opts(AnswerId, Opt1, Opt2, Opt3, Opt4) ->
+  {_, _, Micro} = erlang:now(),
+  Rem = Micro rem 3,
+  two_opts(AnswerId, Rem, Opt1, Opt2, Opt3, Opt4).
+%% 1st option is correct
+two_opts(1, Rem, Opt1, Opt2, Opt3, Opt4) ->
+  case Rem of
+    1 ->
+      {{1, Opt1}, {2, Opt2}};
+    2 ->
+      {{1, Opt1}, {3, Opt3}};
+    3 ->
+      {{1, Opt1}, {4, Opt4}}
+  end;
+%% 2nd option is correct
+two_opts(2, Rem, Opt1, Opt2, Opt3, Opt4) ->
+  case Rem of
+    1 ->
+      {{1, Opt1}, {2, Opt2}};
+    2 ->
+      {{2, Opt2}, {3, Opt3}};
+    3 ->
+      {{2, Opt2}, {4, Opt4}}
+  end;
+%% 3rd option is correct
+two_opts(3, Rem, Opt1, Opt2, Opt3, Opt4) ->
+  case Rem of
+    1 ->
+      {{1, Opt1}, {3, Opt3}};
+    2 ->
+      {{2, Opt2}, {3, Opt3}};
+    3 ->
+      {{3, Opt3}, {4, Opt4}}
+  end;
+%% 4th option is correct
+two_opts(4, Rem, Opt1, Opt2, Opt3, Opt4) ->
+  case Rem of
+    1 ->
+      {{1, Opt1}, {4, Opt4}};
+    2 ->
+      {{2, Opt2}, {4, Opt4}};
+    3 ->
+      {{3, Opt3}, {4, Opt4}}
+  end;
+two_opt(Bug, _, Opt1, Opt2, _, _) ->
+  ?ERROR_MSG("Cannot have option ~p", [Bug]),
+  {{1, Opt1}, {2, Opt2}}.
 
 get_timestamp() ->
   {Mega,Sec,Micro} = erlang:now(),
