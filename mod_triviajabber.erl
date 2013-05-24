@@ -214,15 +214,6 @@ do_route(To, From, Packet, State) ->
                         sub_el = [IQRes]})
               end,
               ejabberd_router:route(To, From, Res);
-%            #iq{type = get, xmlns= ?NS_COMMANDS} = IQ ->
-%              GetRes = case iq_command(From, To, IQ, State) of
-%                  {error, Error} ->
-%                    jlib:make_error_reply(Packet, Error);
-%                  {result, IQRes} ->
-%                    jlib:iq_to_xml(IQ#iq{type = result,
-%                        sub_el = [IQRes]})
-%              end,
-%              ejabberd_router:route(To, From, GetRes);
             #iq{} ->
               Err = jlib:make_error_reply(Packet,
                   ?ERR_FEATURE_NOT_IMPLEMENTED),
@@ -326,9 +317,32 @@ handle_request(#adhoc_request{node = Command} = Request,
     ?STATUS_NODE ->
       {xmlelement, "status", Items, []};
     ?FIFTY_NODE ->
-      {xmlelement,"item", Items,
-          [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
-      };
+      case {Items, Message} of
+        {{Step, QPhrase, {Int1Id, Opt1}, {Int2Id, Opt2}},
+            "reduce to 2 options"} ->
+          Id1 = erlang:integer_to_list(Int1Id),
+          Id2 = erlang:integer_to_list(Int2Id),
+          QuestionIdStr = erlang:integer_to_list(Step),
+          {xmlelement, "lifeline", [{"type", "fifty"}, {"status", "ok"}],
+              [
+               {xmlelement, "question", [{"id", QuestionIdStr}],
+                   [{xmlcdata, QPhrase}]
+               },
+               {xmlelement, "answers", [],
+                   [{xmlelement, "option", [{"id", Id1}],
+                       [{xmlcdata, Opt1}]
+                    },
+                    {xmlelement, "option", [{"id", Id2}],
+                       [{xmlcdata, Opt2}]
+                    }]
+               }
+              ]
+          };
+        _ ->
+          {xmlelement,"item", Items,
+              [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
+          }
+      end;
     _ ->
       {xmlelement,"item", Items,
           [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
@@ -498,8 +512,7 @@ execute_command(?STATUS_NODE, From, Options,
       {[{"return", "false"}, {"desc", "null"}], "You arent participant"}
   end;
 %% "lifeline:fifty" command
-execute_command(?FIFTY_NODE, From, Options,
-    #sixclicksstate{host = Server, minplayers = _MinPlayers}) ->
+execute_command(?FIFTY_NODE, From, Options, _State) ->
   Player = From#jid.user,
   Resource = From#jid.resource,
   [GameId] = proplists:get_value("game_id", Options),
@@ -509,11 +522,10 @@ execute_command(?FIFTY_NODE, From, Options,
     {ok, Question, QPhrase, Random1, Random2} ->
       {Int1Id, Opt1} = Random1,
       {Int2Id, Opt2} = Random2,
-        %% TODO: set stanza
-      ok;
+        {{Question, QPhrase, {Int1Id, Opt1}, {Int2Id, Opt2}}, "reduce to 2 options"};
     Ret ->
       ?ERROR_MSG("lifeline_fifty BUG ~p", [Ret]),
-      {[{"return", "false"}, {"desc", Slug}], "lifeline_fifty has bug"}
+      {[{"return", "false"}, {"desc", "null"}], "lifeline_fifty has bug"}
   end.
 
 %% Helpers

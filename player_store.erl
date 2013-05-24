@@ -9,7 +9,7 @@
 -module(player_store).
 -author('od06@htklabs.com').
 
--export([init/0, close/0, insert/3,
+-export([init/0, close/0, insert/6,
          match_delete/1, match_object/1]).
 
 init() ->

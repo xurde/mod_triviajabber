@@ -20,19 +20,19 @@ close() ->
   ets:delete_all_objects(?MODULE),
   ets:delete(?MODULE).
 
-%% DBid is questionId from pool
+%% QPhase is question string
 insert(Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
     Opt1, Opt2, Opt3, Opt4) ->
   ets:insert(?MODULE, {Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
       Opt1, Opt2, Opt3, Opt4}),
-  {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+  {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
       Opt1, Opt2, Opt3, Opt4}.
 
 lookup(Pid) ->
   case ets:lookup(?MODULE, Pid) of
-    [{Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+    [{Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
         Opt1, Opt2, Opt3, Opt4}] ->
-      {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, DBId,
+      {ok, Pid, Question, AnswerId, QuestionId, TimeStamp, QPhrase,
           Opt1, Opt2, Opt3, Opt4};
     [] ->
       {null, not_found};

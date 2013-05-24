@@ -31,6 +31,7 @@
 -define(KILLAFTER, 2000).
 -define(DELAYNEXT1, 1500).
 -define(DELAYNEXT2, 3000).
+-define(REASONABLE, 5000).
 -define(COUNTDOWNSTR, "Game is about to start. Please wait for other players to join.").
 
 -record(gamestate, {host, slug, pool_id,
@@ -40,11 +41,6 @@
 -record(answer0state, {slug, wrongqueue}).
 -record(playersstate, {slug, playersets}). 
 -record(scoresstate, {player, score}).
-% Using ets has only one record
-%-record(questionstate, {
-%    questionid, question, answerid, timestamp, dbid,
-%    opt1, opt2, opt3, opt4
-%}.
 
 %% when new player has joined game room,
 %% check if there are enough players to start
@@ -186,10 +182,10 @@ handle_call(gamestatus, _From, #gamestate{
     Any ->
       {reply, Any, State}
   end;
-handle_call({fifty, Player, Resource}, _From, #gamestate{
+handle_call(fifty, _From, #gamestate{
     host = _Host, slug = _Slug,
-    questions = Questions, seconds = _StrSeconds,
-    pool_id = _PoolId, final_players = Final,
+    questions = _Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
     started = _Started, minplayers = _MinPlayers} = State) ->
   Reply = case triviajabber_question:lookup(self()) of
     {ok, _Pid, Question, AnswerId, _QuestionId, _Time, QPhrase,
@@ -198,7 +194,7 @@ handle_call({fifty, Player, Resource}, _From, #gamestate{
         Question > 0 ->
           {ok, Question, AnswerId, QPhrase, Opt1, Opt2, Opt3, Opt4};
         true ->
-          {error, invalid_question};
+          {error, invalid_question}
       end;
     {null, not_found} ->
       {null, notfound};
@@ -435,39 +431,30 @@ lifeline_fifty(Slug, Player, Resource) ->
             Fifty > 0 ->
               player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
               player_store:insert(Slug, Player, Resource, Fifty-1, Clair, Rollback),
-              try gen_server:call(Pid, {fifty, Player, Resource}) of
+              try gen_server:call(Pid, fifty) of
                 {null, notfound} ->
-%                  {[{"return", "false"}, {"desc", Slug}], "question havent been sent"}
                   {failed, Slug, "question havent been sent"};
-                {error, Res} ->
-%                  {[{"return", "false"}, {"desc", Slug}], "not found question"}
+                {error, _} ->
                   {failed, Slug, "not found question"};
-                {ok, Question, AnswerId, QPhrase, Opt1, Opt2, Opt3, Opt4}
-                  %% TODO: get question from PoolId
-                  {Random1, Random2} = take_two_opts(AnswerId, Opt1, Opt2, Opt3, Opt4),
+                {ok, Question, AnswerIdStr, QPhrase, Opt1, Opt2, Opt3, Opt4} ->
+                  {Random1, Random2} = take_two_opts(AnswerIdStr, Opt1, Opt2, Opt3, Opt4),
                   {ok, Question, QPhrase, Random1, Random2};
                 ErrorRet ->
                   ?ERROR_MSG("triviajabber_question:lookup ~p", [ErrorRet]),
-%                  {[{"return", "false"}, {"desc", Slug}], "unknown error"}
                   {failed, Slug, "unknown error"}
               catch
                 EClass:Exc ->
                   ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
-%                  {[{"return", "false"}, {"desc", Slug}], "exception"}
                   {failed, Slug, "exception"}
               end;
             true ->
-%              {[{"return", "false"}, {"desc", Slug}], "you used 50%-lifeline"}
               {failed, Slug, "you used 50%-lifeline"}
           end;
         Ret ->
-          ?ERROR_MSG("many resources of player joined in game", []),
-%          {[{"return", "false"}, {"desc", Slug}],
-%              "many resources of player joined in game"}
+          ?ERROR_MSG("many resources of player joined ~p", [Ret]),
           {failed, Slug, "many resources of player joined in game"}
       end;
     {null, not_found} ->
-%      {[{"return", "false"}, {"desc", Slug}], "game havent started"}
        {failed, Slug, "game havent started"}
   end.
 
@@ -668,16 +655,6 @@ send_question(Server, Final, Questions, Slug,
       error
   end.
 
-%broadcast_ranking_msg(Server, Slug, List, RQuestion, RGame) ->
-%  ?WARNING_MSG("RankingGame ~p", [RGame]),
-%  lists:foreach(fun({_, Player, Resource}) ->
-%    To = jlib:make_jid(Player, Server, Resource),
-%    GameServer = "triviajabber." ++ Server,
-%    From = jlib:make_jid(Slug, GameServer, Slug),
-%    ejabberd_router:route(From, To, RQuestion),
-%    ejabberd_router:route(From, To, RGame)
-%  end, List).
-
 broadcast_msg(Server, Slug, List, Packet) ->
   lists:foreach(fun({_, Player, Resource, _, _, _}) ->
     To = jlib:make_jid(Player, Server, Resource),
@@ -829,7 +806,7 @@ next_question(StrSeconds, Tail, Step) ->
   end.
 
 finish_game(_, _Slug, _PoolId, _Final, 1, _Questions) ->
-  %% TODO: update scores of players in DB
+  %% TODO: update scores of players in Redis
   ok;
 finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
   ?WARNING_MSG("game ~p (pool ~p) finished, final ~p",
@@ -962,51 +939,51 @@ get_question_fifty(Server, QuestionId) ->
       error
   end.
 
-take_two_opts(AnswerId, Opt1, Opt2, Opt3, Opt4) ->
+take_two_opts(AnswerIdStr, Opt1, Opt2, Opt3, Opt4) ->
   {_, _, Micro} = erlang:now(),
   Rem = Micro rem 3,
-  two_opts(AnswerId, Rem, Opt1, Opt2, Opt3, Opt4).
+  two_opts(AnswerIdStr, Rem, Opt1, Opt2, Opt3, Opt4).
 %% 1st option is correct
-two_opts(1, Rem, Opt1, Opt2, Opt3, Opt4) ->
+two_opts("1", Rem, Opt1, Opt2, Opt3, Opt4) ->
   case Rem of
-    1 ->
+    0 ->
       {{1, Opt1}, {2, Opt2}};
-    2 ->
+    1 ->
       {{1, Opt1}, {3, Opt3}};
-    3 ->
+    2 ->
       {{1, Opt1}, {4, Opt4}}
   end;
 %% 2nd option is correct
-two_opts(2, Rem, Opt1, Opt2, Opt3, Opt4) ->
+two_opts("2", Rem, Opt1, Opt2, Opt3, Opt4) ->
   case Rem of
-    1 ->
+    0 ->
       {{1, Opt1}, {2, Opt2}};
-    2 ->
+    1 ->
       {{2, Opt2}, {3, Opt3}};
-    3 ->
+    2 ->
       {{2, Opt2}, {4, Opt4}}
   end;
 %% 3rd option is correct
-two_opts(3, Rem, Opt1, Opt2, Opt3, Opt4) ->
+two_opts("3", Rem, Opt1, Opt2, Opt3, Opt4) ->
   case Rem of
-    1 ->
+    0 ->
       {{1, Opt1}, {3, Opt3}};
-    2 ->
+    1 ->
       {{2, Opt2}, {3, Opt3}};
-    3 ->
+    2 ->
       {{3, Opt3}, {4, Opt4}}
   end;
 %% 4th option is correct
-two_opts(4, Rem, Opt1, Opt2, Opt3, Opt4) ->
+two_opts("4", Rem, Opt1, Opt2, Opt3, Opt4) ->
   case Rem of
-    1 ->
+    0 ->
       {{1, Opt1}, {4, Opt4}};
-    2 ->
+    1 ->
       {{2, Opt2}, {4, Opt4}};
-    3 ->
+    2 ->
       {{3, Opt3}, {4, Opt4}}
   end;
-two_opt(Bug, _, Opt1, Opt2, _, _) ->
+two_opts(Bug, _, Opt1, Opt2, _, _) ->
   ?ERROR_MSG("Cannot have option ~p", [Bug]),
   {{1, Opt1}, {2, Opt2}}.
 
@@ -1021,7 +998,7 @@ reasonable_hittime(ServerStamp, ClientTime, StrSeconds) ->
       ServerTime = get_timestamp() - ServerStamp,
       Gap = ServerTime - ClientTime,
       if
-        Gap > 0, Gap < ?DELAYNEXT2 ->
+        Gap > 0, Gap < ?REASONABLE ->
           Reset = if
             ServerTime >= Seconds*1000 ->
               reset;
@@ -1037,7 +1014,7 @@ reasonable_hittime(ServerStamp, ClientTime, StrSeconds) ->
           %% ClientTime is too small,
           %% it's unreasonable.
           if
-            ServerTime > Seconds + ?DELAYNEXT2 ->
+            ServerTime > Seconds + ?REASONABLE ->
               "toolate";
             true ->           
               {ServerTime, no}
@@ -1120,7 +1097,7 @@ update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
 update_scoreboard([], Ret) ->
   lists:keysort(2, Ret);
 update_scoreboard([Head|Tail], Acc) ->
-  {_Slug, Player, _Resource} = Head,
+  {_Slug, Player, _Resource, _, _, _} = Head,
   Add = case mnesia:dirty_read(scoresstate, Player) of
     [] ->
       ?WARNING_MSG("dirty_read(scoresstate): didnt see ~p",
@@ -1158,6 +1135,7 @@ scoreboard_items([Head|Tail], Ret) ->
   },
   scoreboard_items(Tail, [Add|Ret]).
 
+%% return answer option id (string)
 find_answer([], _) ->
   ?ERROR_MSG("!! Not found answer in permutation !!", []),
   "0";
