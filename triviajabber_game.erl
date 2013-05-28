@@ -39,6 +39,7 @@
     minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 -record(answer1state, {slug, rightqueue}).
 -record(answer0state, {slug, wrongqueue}).
+-record(statistic, {slug, opt1, opt2, opt3, opt4}).
 -record(playersstate, {slug, playersets}). 
 -record(scoresstate, {player, score}).
 
@@ -127,12 +128,14 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
                   [HitTimeY]),
               onetime_delelement(Slug, Player),
               %% push into true queue
-              push_right_answer(Slug, Player, HitTimeY);
+              push_right_answer(Slug, Player, HitTimeY),
+              statistic_answer(Slug, Answer);
             {HitTimeX, no} ->
               ?WARNING_MSG("(RN) right answer. hittime ~p",
                   [HitTimeX]),
               %% push into true queue
-              push_right_answer(Slug, Player, HitTimeX)
+              push_right_answer(Slug, Player, HitTimeX),
+              statistic_answer(Slug, Answer)
           end;
         [{_Pid, _Question, A1, QuestionId, Stamp0, _, _, _, _, _}] ->
           case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
@@ -145,12 +148,14 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
                   [A1, HitTime0X]),
               onetime_delelement(Slug, Player),
               %% push into wrong queue
-              push_wrong_answer(Slug, Player, HitTime0X);
+              push_wrong_answer(Slug, Player, HitTime0X),
+              statistic_answer(Slug, A1);
             {HitTime0Y, no} ->
               ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
                   [A1, HitTime0Y]),
               %% push into wrong queue
-              push_wrong_answer(Slug, Player, HitTime0Y)
+              push_wrong_answer(Slug, Player, HitTime0Y),
+              statistic_answer(Slug, A1)
           end;
         Ret ->
           ?WARNING_MSG("~p answered uncorrectly: ~p",
@@ -315,6 +320,7 @@ terminate(Reason, #gamestate{
   ?WARNING_MSG("terminate ~p(~p): ~p", [Pid, Slug, Reason]),
   mnesia:delete_table(answer1state),
   mnesia:delete_table(answer0state),
+  mnesia:delete_table(statistic),
   mnesia:delete_table(playersstate),
   mnesia:delete_table(scoresstate),
   recycle_game(Pid, Slug),
@@ -336,6 +342,9 @@ init([Host, Opts]) ->
   mnesia:create_table(answer0state, [{attributes,
       record_info(fields, answer0state)}]),
   mnesia:clear_table(answer0state),
+  mnesia:create_table(statistic, [{attributes,
+      record_info(fields, statistic)}]),
+  mnesia:clear_table(statistic),
   mnesia:create_table(playersstate, [{attributes,
       record_info(fields, playersstate)}]),
   mnesia:clear_table(playersstate),
@@ -457,6 +466,15 @@ lifeline_fifty(Slug, Player, Resource) ->
     {null, not_found} ->
        {failed, Slug, "game havent started"}
   end.
+
+%lifeline_clair(Slug) ->
+%  case triviajabber_store:lookup(Slug) of
+%    {ok, Slug, _PoolId, Pid} ->
+
+
+%    {null, not_found} ->
+%       {failed, Slug, "game havent started"}
+%  end.
 
 % get_current_question
 current_question(Slug) ->
@@ -715,6 +733,40 @@ onetime_answer(Slug, Player) ->
   end,
   mnesia:transaction(Fun).
 
+%% how people answered current question
+statistic_answer(Slug, AnswerIdStr) ->
+  Fun = fun() ->
+    {Opt1, Opt2, Opt3, Opt4} =
+      case mnesia:read(statistic, Slug) of
+        [] ->
+          {0, 0, 0, 0};
+        [E] ->
+          #statistic{slug = _, opt1 = O1,
+              opt2 = O2, opt3 = O3, opt4 = O4} = E,
+          {O1, O2, O3, O4}
+      end,
+    {U1, U2, U3, U4} = statistic_update(AnswerIdStr,
+        Opt1, Opt2, Opt3, Opt4),
+    mnesia:write(#statistic{
+        slug = Slug,
+        opt1 = U1, opt2 = U2,
+        opt3 = U3, opt4 = U4
+    })
+  end,
+  mnesia:transaction(Fun).
+
+statistic_update("1", Opt1, Opt2, Opt3, Opt4) ->
+  {Opt1+1, Opt2, Opt3, Opt4};
+statistic_update("2", Opt1, Opt2, Opt3, Opt4) ->
+  {Opt1, Opt2+1, Opt3, Opt4};
+statistic_update("3", Opt1, Opt2, Opt3, Opt4) ->
+  {Opt1, Opt2, Opt3+1, Opt4};
+statistic_update("4", Opt1, Opt2, Opt3, Opt4) ->
+  {Opt1, Opt2, Opt3, Opt4+1};
+statistic_update(AnswerIdStr, Opt1, Opt2, Opt3, Opt4) ->
+  ?ERROR_MSG("dont know answer ~p of question", [AnswerIdStr]),
+  {Opt1, Opt2, Opt3, Opt4}.
+
 %% push right answer
 push_right_answer(Slug, Player, HitTime) ->
   ?WARNING_MSG("push_right(~p, ~p)", [Player, HitTime]),
@@ -789,6 +841,7 @@ result_previous_question(Slug, Final) ->
   %% who don't give answer, dont change his score
   mnesia:clear_table(answer1state),
   mnesia:clear_table(answer0state),
+  mnesia:clear_table(statistic),
   PlayersTag.
 
 %% next question will be sent in seconds

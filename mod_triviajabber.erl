@@ -42,6 +42,7 @@
 -define(LEAVE_EVENT_NODE, "leave_game").
 -define(STATUS_NODE, "status_game").
 -define(FIFTY_NODE, "fifty").
+-define(CLAIR_NODE, "clairvoyance").
 
 -record(sixclicksstate, {host, route,
     fifty, clairvoyance, rollback,
@@ -196,7 +197,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% Route incoming packet
 do_route(To, From, Packet, State) ->
-  {xmlelement, Name, Attrs, _Els} = Packet,
+    {xmlelement, Name, Attrs, _Els} = Packet,
   case To of
     #jid{luser = "", lresource = ""} ->
       case Name of
@@ -205,6 +206,20 @@ do_route(To, From, Packet, State) ->
             #iq{type = get, xmlns = ?NS_DISCO_ITEMS} = IQ ->
               spawn(?MODULE, iq_disco_items,
                   [From, To, IQ]);
+            #iq{} ->
+              Err = jlib:make_error_reply(Packet,
+                  ?ERR_FEATURE_NOT_IMPLEMENTED),
+              ejabberd_router:route(To, From, Err);
+            _ ->
+              ok
+          end;
+        _ ->
+          ok
+      end;
+    _ ->
+      case Name of
+        "iq" ->
+          case jlib:iq_query_info(Packet) of
             #iq{type = set, xmlns = ?NS_COMMANDS} = IQ ->
               Res = case iq_command(From, To, IQ, State) of
                   {error, Error} ->
@@ -221,11 +236,6 @@ do_route(To, From, Packet, State) ->
             _ ->
               ok
           end;
-        _ ->
-          ok
-      end;
-    _ ->
-      case Name of
         "message" ->
           QuestionId = xml:get_attr_s("id", Attrs),
           AnswerType = xml:get_attr_s("type", Attrs),
@@ -311,14 +321,14 @@ adhoc_request(_From, _To, Other, _State) ->
 
 %% handle the request and produce adhoc response
 handle_request(#adhoc_request{node = Command} = Request,
-    From, _SixClicks, Options, State) ->
-  {Items, Message} = execute_command(Command, From, Options, State),
+    From, SixClicks, Options, State) ->
+  {Items, Message} = execute_command(Command, From, SixClicks, Options, State),
   SubX = case Command of
     ?STATUS_NODE ->
       {xmlelement, "status", Items, []};
     ?FIFTY_NODE ->
       case {Items, Message} of
-        {{Step, QPhrase, {Int1Id, Opt1}, {Int2Id, Opt2}},
+        {{Step, _QPhrase, {Int1Id, _Opt1}, {Int2Id, _Opt2}},
             "reduce to 2 options"} ->
           Id1 = erlang:integer_to_list(Int1Id),
           Id2 = erlang:integer_to_list(Int2Id),
@@ -326,14 +336,14 @@ handle_request(#adhoc_request{node = Command} = Request,
           {xmlelement, "lifeline", [{"type", "fifty"}, {"status", "ok"}],
               [
                {xmlelement, "question", [{"id", QuestionIdStr}],
-                   [{xmlcdata, QPhrase}]
+                   [] %% Dont need question text [{xmlcdata, QPhrase}]
                },
                {xmlelement, "answers", [],
                    [{xmlelement, "option", [{"id", Id1}],
-                       [{xmlcdata, Opt1}]
+                       [] %% Dont need option text [{xmlcdata, Opt1}]
                     },
                     {xmlelement, "option", [{"id", Id2}],
-                       [{xmlcdata, Opt2}]
+                       [] %% Dont need option text [{xmlcdata, Opt2}]
                     }]
                }
               ]
@@ -359,7 +369,8 @@ send_initial_form(#adhoc_request{node = EventNode} = Request) ->
   EventNode =:= ?JOIN_EVENT_NODE;
       EventNode =:= ?LEAVE_EVENT_NODE;
       EventNode =:= ?STATUS_NODE;
-      EventNode =:= ?FIFTY_NODE ->
+      EventNode =:= ?FIFTY_NODE;
+      EventNode =:= ?CLAIR_NODE ->
     Form =
       {xmlelement, "x",
           [{"xmlns", ?NS_XDATA}, {"type", "form"}],
@@ -424,109 +435,144 @@ game_disco_items(Server, GameService) ->
   end.
 
 %% "Join game" command
-execute_command(?JOIN_EVENT_NODE, From, Options,
+execute_command(?JOIN_EVENT_NODE, From, SixClicks, _Options,
     #sixclicksstate{host = Server,
     fifty = Fifty, clairvoyance = Clair, rollback = Rollback,
     minplayers = MinPlayers} = _State) ->
-  [GameId] = proplists:get_value("game_id", Options),
-  %% check game room in DB
-  try get_game_room(GameId, Server) of
-    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"], []} ->
-      {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
-    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"],
-               [{GameName, GameId, GamePool, GameQuestions, GameSeconds}]} ->
-      Player = From#jid.user,
-      Resource = From#jid.resource,
-      %% then cache in player_store
-      case check_player_in_game(Server, MinPlayers, GameId,
-          GamePool, GameQuestions, GameSeconds, Player) of
-        "ok" ->
-          player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
-          {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
-        Err ->
-          ?WARNING_MSG("You have joined this game ~p", [Err]),
-          {[{"return", "fail"}, {"desc", GameName}], "You have joined this game"}
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} ->
+      %% check game room in DB
+      try get_game_room(GameId, Server) of
+        {selected, ["name", "slug", "pool_id", "questions_per_game",
+            "seconds_per_question"], []} ->
+          {[{"return", "false"}, {"desc", "null"}], "Failed to find game"};
+        {selected, ["name", "slug", "pool_id", "questions_per_game",
+            "seconds_per_question"],
+            [{GameName, GameId, GamePool, GameQuestions, GameSeconds}]} ->
+          Player = From#jid.user,
+          Resource = From#jid.resource,
+          %% then cache in player_store
+          case check_player_in_game(Server, MinPlayers, GameId,
+              GamePool, GameQuestions, GameSeconds, Player) of
+            "ok" ->
+              player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
+              {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
+            Err ->
+              ?WARNING_MSG("You have joined this game ~p", [Err]),
+              {[{"return", "fail"}, {"desc", GameName}], "You have joined this game"}
+          end;
+        {selected, ["name", "slug", "pool_id", "questions_per_game",
+            "seconds_per_question"], [{OtherName, _OtherId, _, _, _}]} ->
+          {[{"return", "false"}, {"desc", OtherName}], "Error in database"};
+        Reason ->
+          ?ERROR_MSG("failed to query sixclicks_rooms ~p", [Reason]),
+          {[{"return", "false"}, {"desc", "null"}], "Failed to find game"}
+      catch
+        Res2:Desc2 ->
+        ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2]),
+        {[{"return", "false"}, {"desc", "null"}], "Exception when query game room"}
       end;
-    {selected, ["name", "slug", "pool_id", "questions_per_game", "seconds_per_question"],
-               [{OtherName, _OtherId, _, _, _}]} ->
-      {[{"return", "false"}, {"desc", OtherName}], "Error in database"};
-    Reason ->
-      ?ERROR_MSG("failed to query sixclicks_rooms ~p", [Reason]),
-      {[{"return", "false"}, {"desc", "null"}], "Failed to find game"}
-  catch
-    Res2:Desc2 ->
-      ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2]),
-      {[{"return", "false"}, {"desc", "null"}], "Exception when query game room"}
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end;
 %% "Leave game" command
-execute_command(?LEAVE_EVENT_NODE, From, Options, _State) ->
-  [GameId] = proplists:get_value("game_id", Options),
-  Player = From#jid.user,
-  Resource = From#jid.resource,
-  %% check game room in cache (player_store)
-  case check_player_joined_game(GameId, Player, Resource) of
-    ok ->
-      {[{"return", "true"}, {"desc", GameId}], "You have left"};
-    notfound ->
-      {[{"return", "false"}, {"desc", "null"}], "You havent joined game room"}
+execute_command(?LEAVE_EVENT_NODE, From, SixClicks, _Options,
+    #sixclicksstate{host = Server}) ->
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} ->
+      Player = From#jid.user,
+      Resource = From#jid.resource,
+      %% check game room in cache (player_store)
+      case check_player_joined_game(GameId, Player, Resource) of
+        ok ->
+          {[{"return", "true"}, {"desc", GameId}], "You have left"};
+        notfound ->
+          {[{"return", "false"}, {"desc", "null"}], "You havent joined game room"}
+      end;
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end;
 %% "status game" command
-execute_command(?STATUS_NODE, From, Options,
-    #sixclicksstate{host = Server, minplayers = _MinPlayers}) ->
-  [GameId] = proplists:get_value("game_id", Options),
-  StateData = get_room_state(Server, GameId),
-  case ?DICT:find(jlib:jid_tolower(From),
-      StateData#state.users) of
-    {ok, #user{jid = FoundJid}} ->
-      ?WARNING_MSG("found jid ~p", [FoundJid]),
-      case triviajabber_game:current_status(GameId) of
-        {ok, Question, Total, Players} ->
-          {[{"question", Question}, {"total", Total}, {"players", Players}],
-              "You are participant"};
-        {exception, _, _} ->
-          {[{"return", "false"}, {"desc", "exception"}],
-              "getting status failed"};
-        {failed, noprocess} ->
-          try get_questions_per_game(GameId, Server) of
-            {selected, ["questions_per_game"], []} ->
-              {[{"return", "false"}, {"desc", "sql returns empty"}],
-                  "queried questions_per_game"};
-            {selected, ["questions_per_game"], [{GameQuestions}]} ->
-              {[{"question", "-1"}, {"total", GameQuestions}, {"players", "0"}],
+execute_command(?STATUS_NODE, From, SixClicks, _Options,
+    #sixclicksstate{host = Server}) ->
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} ->
+      StateData = get_room_state(Server, GameId),
+      case ?DICT:find(jlib:jid_tolower(From),
+          StateData#state.users) of
+        {ok, #user{jid = FoundJid}} ->
+          ?WARNING_MSG("found jid ~p", [FoundJid]),
+          case triviajabber_game:current_status(GameId) of
+            {ok, Question, Total, Players} ->
+              {[{"question", Question}, {"total", Total}, {"players", Players}],
                   "You are participant"};
-            Reason ->
-              ?ERROR_MSG("get_questions_per_game(~p) = ~p", [GameId, Reason]),
-              {[{"return", "false"}, {"desc", "sql returns many results"}],
-                  "queried questions_per_game"}
-          catch
-            Res3:Desc3 ->
-              ?ERROR_MSG("Exception ~p, ~p", [Res3, Desc3]),
+            {exception, _, _} ->
               {[{"return", "false"}, {"desc", "exception"}],
-                  "queried questions_per_game"}
+                  "getting status failed"};
+            {failed, noprocess} ->
+              try get_questions_per_game(GameId, Server) of
+                {selected, ["questions_per_game"], []} ->
+                  {[{"return", "false"}, {"desc", "sql returns empty"}],
+                      "queried questions_per_game"};
+                {selected, ["questions_per_game"], [{GameQuestions}]} ->
+                  {[{"question", "-1"}, {"total", GameQuestions}, {"players", "0"}],
+                      "You are participant"};
+                Reason ->
+                  ?ERROR_MSG("get_questions_per_game(~p) = ~p", [GameId, Reason]),
+                  {[{"return", "false"}, {"desc", "sql returns many results"}],
+                      "queried questions_per_game"}
+              catch
+                Res3:Desc3 ->
+                  ?ERROR_MSG("Exception ~p, ~p", [Res3, Desc3]),
+                    {[{"return", "false"}, {"desc", "exception"}],
+                        "queried questions_per_game"}
+              end;
+            _ ->
+              {[{"return", "false"}, {"desc", "error"}], "You are participant"}
           end;
-        _ ->
-          {[{"return", "false"}, {"desc", "error"}], "You are participant"}
+        Ret ->
+          ?WARNING_MSG("notfound jid of requester ~p: ~p", [From#jid.user, Ret]),
+          {[{"return", "false"}, {"desc", "null"}], "You arent participant"}
       end;
-    Ret ->
-      ?WARNING_MSG("notfound jid of requester ~p: ~p", [From#jid.user, Ret]),
-      {[{"return", "false"}, {"desc", "null"}], "You arent participant"}
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end;
 %% "lifeline:fifty" command
-execute_command(?FIFTY_NODE, From, Options, _State) ->
+execute_command(?FIFTY_NODE, From, SixClicks, _Options,
+    #sixclicksstate{host = Server}) ->
   Player = From#jid.user,
   Resource = From#jid.resource,
-  [GameId] = proplists:get_value("game_id", Options),
-  case triviajabber_game:lifeline_fifty(GameId, Player, Resource) of
-    {failed, Slug, Title} ->
-      {[{"return", "false"}, {"desc", Slug}], Title};
-    {ok, Question, QPhrase, Random1, Random2} ->
-      {Int1Id, Opt1} = Random1,
-      {Int2Id, Opt2} = Random2,
-        {{Question, QPhrase, {Int1Id, Opt1}, {Int2Id, Opt2}}, "reduce to 2 options"};
-    Ret ->
-      ?ERROR_MSG("lifeline_fifty BUG ~p", [Ret]),
-      {[{"return", "false"}, {"desc", "null"}], "lifeline_fifty has bug"}
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} ->
+      case triviajabber_game:lifeline_fifty(GameId, Player, Resource) of
+        {failed, Slug, Title} ->
+          {[{"return", "false"}, {"desc", Slug}], Title};
+        {ok, Question, QPhrase, Random1, Random2} ->
+          {Int1Id, Opt1} = Random1,
+          {Int2Id, Opt2} = Random2,
+          {{Question, QPhrase, {Int1Id, Opt1}, {Int2Id, Opt2}}, "reduce to 2 options"};
+        Ret ->
+          ?ERROR_MSG("lifeline_fifty BUG ~p", [Ret]),
+          {[{"return", "false"}, {"desc", "null"}], "lifeline_fifty has bug"}
+      end;
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
+  end;
+%% "lifeline:clairvoyance" command
+execute_command(?CLAIR_NODE, _From, SixClicks, _Options,
+    #sixclicksstate{host = Server}) ->
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} -> 
+      {[{"return", "false"}, {"desc", GameId}], "lifeline_clairvoyance no-implement"};
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end.
+
 
 %% Helpers
 get_questions_per_game(GameId, Server) ->

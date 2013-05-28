@@ -150,14 +150,13 @@ lissn.chat={
         'action' : 'execute'
     };
     var lifelineIq = $iq({
-      'to': "triviajabber." + lissn.chat.domainName,
+      'to': gameId + "@triviajabber." + lissn.chat.domainName,
       'from': lissn.chat.connection.jid,
       'id': command_id,
       'type': 'set'
     })
       .c('command', command_attrs)
-      .c('x', {'xmlns': 'jabber:x:data', 'type': 'submit'})
-      .c('field', {'var': 'game_id'}).c('value').t(gameId);
+      .c('x', {'xmlns': 'jabber:x:data', 'type': 'submit'});
 
     command_callback = function(e) {
       return true;
@@ -178,14 +177,13 @@ lissn.chat={
     };
 
     var commandIq = $iq({
-      'to': "triviajabber."+lissn.chat.domainName,
+      'to': game + "@triviajabber."+lissn.chat.domainName,
       'from': lissn.chat.connection.jid,
       'id': command_id,
       'type': 'set'
     })
       .c('command', command_attrs)
-      .c('x', {'xmlns': 'jabber:x:data', 'type': 'submit'})
-      .c('field', {'var': 'game_id'}).c('value').t(game);
+      .c('x', {'xmlns': 'jabber:x:data', 'type': 'submit'});
 
     command_callback = function(e) {
       var c = $(e).find('command');
