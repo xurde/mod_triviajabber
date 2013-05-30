@@ -80,8 +80,11 @@ lissn.chat={
 
     $("#fifty").click(function(ev) {
       var slug = $("#gameid").val();
-      console.log("gameid = " + slug);
       lissn.chat.lifeline_iq(slug, "fifty");
+    });
+    $("#clairvoyance").click(function(ev) {
+      var slug = $("#gameid").val();
+      lissn.chat.lifeline_iq(slug, "clairvoyance");
     });
   },
 
@@ -143,6 +146,9 @@ lissn.chat={
   },
 
   lifeline_iq: function(gameId, event_node) {
+//  event_node = 'fifty';
+//  event_node = 'clairvoyance';
+//  event_node = 'rollback';
     var command_id =lissn.chat.connection.getUniqueId("command");
     var command_attrs = {
         'xmlns': 'http://jabber.org/protocol/commands',

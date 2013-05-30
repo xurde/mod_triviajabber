@@ -29,7 +29,7 @@ lookup(Slug) ->
     [] ->
       {null, not_found};
     Any ->
-      {error, triviajabber_store_lookup, Slug, Any}
+      {error, Any}
   end.
 
 delete(Slug) ->

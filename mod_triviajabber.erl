@@ -243,6 +243,7 @@ do_route(To, From, Packet, State) ->
           TriviajabberDomain = To#jid.server,
           if
             Triviajabber =:= TriviajabberDomain, AnswerType =:= "answer" ->
+              %% module handles only answer message currently
               AnswerTag = xml:get_subtag(Packet, "answer"),
               case get_answer_hittime(AnswerTag) of
                 {null, null} ->
@@ -333,21 +334,23 @@ handle_request(#adhoc_request{node = Command} = Request,
           Id1 = erlang:integer_to_list(Int1Id),
           Id2 = erlang:integer_to_list(Int2Id),
           QuestionIdStr = erlang:integer_to_list(Step),
-          {xmlelement, "lifeline", [{"type", "fifty"}, {"status", "ok"}],
-              [
-               {xmlelement, "question", [{"id", QuestionIdStr}],
-                   [] %% Dont need question text [{xmlcdata, QPhrase}]
-               },
-               {xmlelement, "answers", [],
-                   [{xmlelement, "option", [{"id", Id1}],
-                       [] %% Dont need option text [{xmlcdata, Opt1}]
-                    },
-                    {xmlelement, "option", [{"id", Id2}],
-                       [] %% Dont need option text [{xmlcdata, Opt2}]
-                    }]
-               }
-              ]
-          };
+          lifeline_fifty_xml(QuestionIdStr, Id1, Id2); 
+        _ ->
+          {xmlelement,"item", Items,
+              [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
+          }
+      end;
+    ?CLAIR_NODE ->
+      ?WARNING_MSG("CLAIR_NODE ~p, ~p", [Items, Message]),
+      case {Items, Message} of
+        {{Question, O1, O2, O3, O4}, "people have answered"} ->
+          Sum = O1 + O2 + O3 + O4,
+          O1Str = erlang:integer_to_list(O1),
+          O2Str = erlang:integer_to_list(O2),
+          O3Str = erlang:integer_to_list(O3),
+          O4Str = erlang:integer_to_list(O4),
+          SumStr = erlang:integer_to_list(Sum),
+          lifeline_clairvoyance_xml(Question, O1Str, O2Str, O3Str, O4Str, SumStr);
         _ ->
           {xmlelement,"item", Items,
               [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
@@ -567,8 +570,17 @@ execute_command(?CLAIR_NODE, _From, SixClicks, _Options,
     #sixclicksstate{host = Server}) ->
   SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
   case SixClicks of
-    #jid{luser = GameId, lserver = SlugNode} -> 
-      {[{"return", "false"}, {"desc", GameId}], "lifeline_clairvoyance no-implement"};
+    #jid{luser = GameId, lserver = SlugNode} ->
+      ?WARNING_MSG("execute clair_node ~p@~p", [GameId, SlugNode]),
+      case triviajabber_game:lifeline_clair(GameId) of
+        {failed, Slug, Title} ->
+          {[{"return", "false"}, {"desc", Slug}], Title};
+        {ok, Question, O1, O2, O3, O4} ->
+          {{Question, O1, O2, O3, O4}, "people have answered"};
+        Ret ->
+          ?ERROR_MSG("lifeline_clairvoyance BUG ~p", [Ret]),
+          {[{"return", "false"}, {"desc", "null"}], "lifeline_clairvoyance has bug"}
+      end;
     _ ->
       {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end.
@@ -723,3 +735,35 @@ get_room_state(Server, RoomName) ->
 get_room_state(RoomPid) ->
     {ok, R} = gen_fsm:sync_send_all_state_event(RoomPid, get_state),
     R.
+
+%% fill xml into lifeline iqs
+lifeline_clairvoyance_xml(Question, O1Str, O2Str, O3Str, O4Str, SumStr) ->
+  {xmlelement, "lifeline", [{"type", "clairvoyance"}, {"status", "ok"}],
+    [{xmlelement, "question", [{"id", Question}, {"response", SumStr}],
+      [
+       {xmlelement, "option", [{"id", "1"}, {"count", O1Str}], []},
+       {xmlelement, "option", [{"id", "2"}, {"count", O2Str}], []},
+       {xmlelement, "option", [{"id", "3"}, {"count", O3Str}], []},
+       {xmlelement, "option", [{"id", "4"}, {"count", O4Str}], []}
+      ]
+     }
+    ]
+  }.
+
+lifeline_fifty_xml(Question, Id1Str, Id2Str) ->
+  {xmlelement, "lifeline", [{"type", "fifty"}, {"status", "ok"}],
+    [
+     {xmlelement, "question", [{"id", Question}],
+         [] %% Dont need question text [{xmlcdata, QPhrase}]
+     },
+     {xmlelement, "answers", [],
+         [{xmlelement, "option", [{"id", Id1Str}],
+             [] %% Dont need option text [{xmlcdata, Opt1}]
+          },
+          {xmlelement, "option", [{"id", Id2Str}],
+             [] %% Dont need option text [{xmlcdata, Opt2}]
+          }]
+     }
+    ]
+  }.
+
