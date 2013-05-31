@@ -20,6 +20,7 @@
 -export([take_new_player/7, remove_old_player/1,
          current_question/1, get_answer/5,
          current_status/1, lifeline_fifty/3,
+         lifeline_clair/1,
          get_question_fifty/2]).
 
 -include("ejabberd.hrl").
@@ -149,13 +150,13 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               onetime_delelement(Slug, Player),
               %% push into wrong queue
               push_wrong_answer(Slug, Player, HitTime0X),
-              statistic_answer(Slug, A1);
+              statistic_answer(Slug, Answer);
             {HitTime0Y, no} ->
               ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
                   [A1, HitTime0Y]),
               %% push into wrong queue
               push_wrong_answer(Slug, Player, HitTime0Y),
-              statistic_answer(Slug, A1)
+              statistic_answer(Slug, Answer)
           end;
         Ret ->
           ?WARNING_MSG("~p answered uncorrectly: ~p",
@@ -187,6 +188,7 @@ handle_call(gamestatus, _From, #gamestate{
     Any ->
       {reply, Any, State}
   end;
+%% handle lifeline:fifty
 handle_call(fifty, _From, #gamestate{
     host = _Host, slug = _Slug,
     questions = _Questions, seconds = _StrSeconds,
@@ -206,6 +208,36 @@ handle_call(fifty, _From, #gamestate{
     Ret ->
       {error, Ret}
   end,
+  {reply, Reply, State};
+%% handle lifeline:clairvoyance
+handle_call(clair, _From, #gamestate{
+    host = _Host, slug = Slug,
+    questions = _Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
+    started = _Started, minplayers = _MinPlayers} = State) ->
+  Reply = case triviajabber_question:lookup(self()) of
+    {ok, _, Question, _AnswerId, _QuesId, _Time, _QPhrase,
+        _O1, _O2, _O3, _O4} ->
+      ?WARNING_MSG("before dirty_read statistic of ~p question", [Question]),
+      case mnesia:dirty_read(statistic, Slug) of
+        [] ->
+          {ok, Question, 0, 0, 0, 0};
+        [E] ->
+          #statistic{slug = _, opt1 = O1,
+              opt2 = O2, opt3 = O3, opt4 = O4} = E,
+          {ok, Question, O1, O2, O3, O4};
+        Hell ->
+          ?ERROR_MSG("statistic HELL ~p", [Hell]),
+          {ok, Question, -1, -1, -1, -1}
+      end;
+    {null, not_found} ->
+      {null, notfound};
+    {error, Any} ->
+      {error, Any};
+    Ret ->
+      {error, Ret}
+  end,
+  ?WARNING_MSG("handled clair of ~p = ~p", [Slug, Reply]),
   {reply, Reply, State};
 %% when module kills child because game room is empty
 handle_call(stop, _From, State) ->
@@ -406,8 +438,10 @@ take_new_player(Host, Slug, PoolId, Player,
       ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, PoolId, Pid),
       ok;
+    {error, Any} ->
+      ?ERROR_MSG("D. [player joined] lookup : ~p", [Any]);
     Error ->
-      ?ERROR_MSG("D. [player joined] lookup : ~p", [Error])  
+      ?ERROR_MSG("E. [player joined] lookup : ~p", [Error])  
   end.
 %% Old player joined game room (slug),
 %% After he requested, he has left.
@@ -426,6 +460,8 @@ remove_old_player(Slug) ->
     {null, not_found} ->
       ?ERROR_MSG("there no process to handle ~p", [Slug]),
       ok;
+    {error, Any} ->
+      ?ERROR_MSG("[player left] lookup : ~p", [Any]);
     Error ->
       ?ERROR_MSG("[player left] lookup : ~p", [Error])
   end.
@@ -443,7 +479,8 @@ lifeline_fifty(Slug, Player, Resource) ->
               try gen_server:call(Pid, fifty) of
                 {null, notfound} ->
                   {failed, Slug, "question havent been sent"};
-                {error, _} ->
+                {error, Unknown} ->
+                  ?ERROR_MSG("fifty, error ~p", [Unknown]),
                   {failed, Slug, "not found question"};
                 {ok, Question, AnswerIdStr, QPhrase, Opt1, Opt2, Opt3, Opt4} ->
                   {Random1, Random2} = take_two_opts(AnswerIdStr, Opt1, Opt2, Opt3, Opt4),
@@ -464,17 +501,40 @@ lifeline_fifty(Slug, Player, Resource) ->
           {failed, Slug, "many resources of player joined in game"}
       end;
     {null, not_found} ->
-       {failed, Slug, "game havent started"}
+       {failed, Slug, "game havent started"};
+    {error, _} ->
+       {failed, Slug, "failed to find game thread"}
   end.
 
-%lifeline_clair(Slug) ->
-%  case triviajabber_store:lookup(Slug) of
-%    {ok, Slug, _PoolId, Pid} ->
-
-
-%    {null, not_found} ->
-%       {failed, Slug, "game havent started"}
-%  end.
+%% FIXME: pass player, resource to update #clair
+lifeline_clair(Slug) ->
+  case triviajabber_store:lookup(Slug) of
+    {ok, Slug, _PoolId, Pid} ->
+      ?WARNING_MSG("found process handles ~p", [Slug]),
+      try gen_server:call(Pid, clair) of
+        {null, notfound} ->
+          {failed, Slug, "question havent been sent"};
+        {error, Unknown} ->
+          ?ERROR_MSG("fifty, error ~p", [Unknown]),
+          {failed, Slug, "not found question"};
+        {ok, Question, O1, O2, O3, O4} ->
+          {ok, Question, O1, O2, O3, O4};
+        WhattheHell ->
+          ?ERROR_MSG("HELL clair ~p", [WhattheHell]),
+          {failed, Slug, "hellraiser"}
+      catch
+        EClass:Exc ->
+          ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+          {failed, Slug, "exception"}
+      end;
+    {null, not_found} ->
+      {failed, Slug, "game havent started"};
+    {error, _} ->
+      {failed, Slug, "failed to find game thread"};
+    Ret ->
+      ?ERROR_MSG("lifeline_clair ~p", [Ret]),
+      {failed, Slug, "failed to lookup thread"}
+  end.
 
 % get_current_question
 current_question(Slug) ->
@@ -747,6 +807,7 @@ statistic_answer(Slug, AnswerIdStr) ->
       end,
     {U1, U2, U3, U4} = statistic_update(AnswerIdStr,
         Opt1, Opt2, Opt3, Opt4),
+    ?WARNING_MSG("statistic ~p, ~p, ~p, ~p", [U1, U2, U3, U4]),
     mnesia:write(#statistic{
         slug = Slug,
         opt1 = U1, opt2 = U2,

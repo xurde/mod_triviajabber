@@ -331,10 +331,7 @@ handle_request(#adhoc_request{node = Command} = Request,
       case {Items, Message} of
         {{Step, _QPhrase, {Int1Id, _Opt1}, {Int2Id, _Opt2}},
             "reduce to 2 options"} ->
-          Id1 = erlang:integer_to_list(Int1Id),
-          Id2 = erlang:integer_to_list(Int2Id),
-          QuestionIdStr = erlang:integer_to_list(Step),
-          lifeline_fifty_xml(QuestionIdStr, Id1, Id2); 
+          lifeline_fifty_xml(Step, Int1Id, Int2Id); 
         _ ->
           {xmlelement,"item", Items,
               [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
@@ -344,13 +341,7 @@ handle_request(#adhoc_request{node = Command} = Request,
       ?WARNING_MSG("CLAIR_NODE ~p, ~p", [Items, Message]),
       case {Items, Message} of
         {{Question, O1, O2, O3, O4}, "people have answered"} ->
-          Sum = O1 + O2 + O3 + O4,
-          O1Str = erlang:integer_to_list(O1),
-          O2Str = erlang:integer_to_list(O2),
-          O3Str = erlang:integer_to_list(O3),
-          O4Str = erlang:integer_to_list(O4),
-          SumStr = erlang:integer_to_list(Sum),
-          lifeline_clairvoyance_xml(Question, O1Str, O2Str, O3Str, O4Str, SumStr);
+          lifeline_clairvoyance_xml(Question, O1, O2, O3, O4);
         _ ->
           {xmlelement,"item", Items,
               [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
@@ -576,6 +567,7 @@ execute_command(?CLAIR_NODE, _From, SixClicks, _Options,
         {failed, Slug, Title} ->
           {[{"return", "false"}, {"desc", Slug}], Title};
         {ok, Question, O1, O2, O3, O4} ->
+          ?WARNING_MSG("people have answered ~p, ~p, ~p, ~p", [O1, O2, O3, O4]),
           {{Question, O1, O2, O3, O4}, "people have answered"};
         Ret ->
           ?ERROR_MSG("lifeline_clairvoyance BUG ~p", [Ret]),
@@ -737,9 +729,16 @@ get_room_state(RoomPid) ->
     R.
 
 %% fill xml into lifeline iqs
-lifeline_clairvoyance_xml(Question, O1Str, O2Str, O3Str, O4Str, SumStr) ->
+lifeline_clairvoyance_xml(Question, O1, O2, O3, O4) ->
+  Sum = O1 + O2 + O3 + O4,
+  O1Str = erlang:integer_to_list(O1),
+  O2Str = erlang:integer_to_list(O2),
+  O3Str = erlang:integer_to_list(O3),
+  O4Str = erlang:integer_to_list(O4),
+  SumStr = erlang:integer_to_list(Sum),
+  QuestionStr = erlang:integer_to_list(Question),
   {xmlelement, "lifeline", [{"type", "clairvoyance"}, {"status", "ok"}],
-    [{xmlelement, "question", [{"id", Question}, {"response", SumStr}],
+    [{xmlelement, "question", [{"id", QuestionStr}, {"response", SumStr}],
       [
        {xmlelement, "option", [{"id", "1"}, {"count", O1Str}], []},
        {xmlelement, "option", [{"id", "2"}, {"count", O2Str}], []},
@@ -750,17 +749,20 @@ lifeline_clairvoyance_xml(Question, O1Str, O2Str, O3Str, O4Str, SumStr) ->
     ]
   }.
 
-lifeline_fifty_xml(Question, Id1Str, Id2Str) ->
+lifeline_fifty_xml(Step, Int1Id, Int2Id) ->
+  Id1 = erlang:integer_to_list(Int1Id),
+  Id2 = erlang:integer_to_list(Int2Id),
+  QuestionIdStr = erlang:integer_to_list(Step),
   {xmlelement, "lifeline", [{"type", "fifty"}, {"status", "ok"}],
     [
-     {xmlelement, "question", [{"id", Question}],
+     {xmlelement, "question", [{"id", QuestionIdStr}],
          [] %% Dont need question text [{xmlcdata, QPhrase}]
      },
      {xmlelement, "answers", [],
-         [{xmlelement, "option", [{"id", Id1Str}],
+         [{xmlelement, "option", [{"id", Id1}],
              [] %% Dont need option text [{xmlcdata, Opt1}]
           },
-          {xmlelement, "option", [{"id", Id2Str}],
+          {xmlelement, "option", [{"id", Id2}],
              [] %% Dont need option text [{xmlcdata, Opt2}]
           }]
      }
