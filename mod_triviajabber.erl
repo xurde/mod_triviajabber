@@ -340,7 +340,7 @@ handle_request(#adhoc_request{node = Command} = Request,
     ?CLAIR_NODE ->
       ?WARNING_MSG("CLAIR_NODE ~p, ~p", [Items, Message]),
       case {Items, Message} of
-        {{Question, O1, O2, O3, O4}, "people have answered"} ->
+        {{Question, O1, O2, O3, O4}, "players have answered"} ->
           lifeline_clairvoyance_xml(Question, O1, O2, O3, O4);
         _ ->
           {xmlelement,"item", Items,
@@ -537,11 +537,11 @@ execute_command(?STATUS_NODE, From, SixClicks, _Options,
 %% "lifeline:fifty" command
 execute_command(?FIFTY_NODE, From, SixClicks, _Options,
     #sixclicksstate{host = Server}) ->
-  Player = From#jid.user,
-  Resource = From#jid.resource,
   SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
   case SixClicks of
     #jid{luser = GameId, lserver = SlugNode} ->
+      Player = From#jid.user,
+      Resource = From#jid.resource,
       case triviajabber_game:lifeline_fifty(GameId, Player, Resource) of
         {failed, Slug, Title} ->
           {[{"return", "false"}, {"desc", Slug}], Title};
@@ -557,18 +557,19 @@ execute_command(?FIFTY_NODE, From, SixClicks, _Options,
       {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end;
 %% "lifeline:clairvoyance" command
-execute_command(?CLAIR_NODE, _From, SixClicks, _Options,
+execute_command(?CLAIR_NODE, From, SixClicks, _Options,
     #sixclicksstate{host = Server}) ->
   SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
   case SixClicks of
     #jid{luser = GameId, lserver = SlugNode} ->
-      ?WARNING_MSG("execute clair_node ~p@~p", [GameId, SlugNode]),
-      case triviajabber_game:lifeline_clair(GameId) of
+      Player = From#jid.user,
+      Resource = From#jid.resource,
+      case triviajabber_game:lifeline_clair(GameId, Player, Resource) of
         {failed, Slug, Title} ->
           {[{"return", "false"}, {"desc", Slug}], Title};
         {ok, Question, O1, O2, O3, O4} ->
-          ?WARNING_MSG("people have answered ~p, ~p, ~p, ~p", [O1, O2, O3, O4]),
-          {{Question, O1, O2, O3, O4}, "people have answered"};
+          ?WARNING_MSG("players have answered ~p, ~p, ~p, ~p", [O1, O2, O3, O4]),
+          {{Question, O1, O2, O3, O4}, "players have answered"};
         Ret ->
           ?ERROR_MSG("lifeline_clairvoyance BUG ~p", [Ret]),
           {[{"return", "false"}, {"desc", "null"}], "lifeline_clairvoyance has bug"}

@@ -19,9 +19,10 @@
 %% helpers
 -export([take_new_player/7, remove_old_player/1,
          current_question/1, get_answer/5,
-         current_status/1, lifeline_fifty/3,
-         lifeline_clair/1,
-         get_question_fifty/2]).
+         current_status/1, get_question_fifty/2,
+         lifeline_fifty/3,
+         lifeline_clair/3
+        ]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -494,7 +495,7 @@ lifeline_fifty(Slug, Player, Resource) ->
                   {failed, Slug, "exception"}
               end;
             true ->
-              {failed, Slug, "you used 50%-lifeline"}
+              {failed, Slug, "you used lifeline:50%"}
           end;
         Ret ->
           ?ERROR_MSG("many resources of player joined ~p", [Ret]),
@@ -506,26 +507,37 @@ lifeline_fifty(Slug, Player, Resource) ->
        {failed, Slug, "failed to find game thread"}
   end.
 
-%% FIXME: pass player, resource to update #clair
-lifeline_clair(Slug) ->
+lifeline_clair(Slug, Player, Resource) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, _PoolId, Pid} ->
-      ?WARNING_MSG("found process handles ~p", [Slug]),
-      try gen_server:call(Pid, clair) of
-        {null, notfound} ->
-          {failed, Slug, "question havent been sent"};
-        {error, Unknown} ->
-          ?ERROR_MSG("fifty, error ~p", [Unknown]),
-          {failed, Slug, "not found question"};
-        {ok, Question, O1, O2, O3, O4} ->
-          {ok, Question, O1, O2, O3, O4};
-        WhattheHell ->
-          ?ERROR_MSG("HELL clair ~p", [WhattheHell]),
-          {failed, Slug, "hellraiser"}
-      catch
-        EClass:Exc ->
-          ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
-          {failed, Slug, "exception"}
+      case player_store:match_object({Slug, Player, Resource, '_', '_', '_'}) of
+        [{Slug, Player, Resource, Fifty, Clair, Rollback}] ->
+          if
+            Clair > 0 ->
+              player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
+              player_store:insert(Slug, Player, Resource, Fifty, Clair-1, Rollback),
+              try gen_server:call(Pid, clair) of
+                {null, notfound} ->
+                  {failed, Slug, "question havent been sent"};
+                {error, Unknown} ->
+                  ?ERROR_MSG("fifty, error ~p", [Unknown]),
+                  {failed, Slug, "not found question"};
+                {ok, Question, O1, O2, O3, O4} ->
+                  {ok, Question, O1, O2, O3, O4};
+                WhattheHell ->
+                  ?ERROR_MSG("HELL clair ~p", [WhattheHell]),
+                  {failed, Slug, "hellraiser"}
+              catch
+                EClass:Exc ->
+                  ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+                  {failed, Slug, "exception"}
+              end;
+            true ->
+              {failed, Slug, "you used lifeline:clairvoyance"}
+          end;
+        ManyRes ->
+          ?ERROR_MSG("many resources of player joined ~p", [ManyRes]),
+          {failed, Slug, "many resources of player joined in game"}
       end;
     {null, not_found} ->
       {failed, Slug, "game havent started"};
