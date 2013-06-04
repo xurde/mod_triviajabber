@@ -490,7 +490,7 @@ lifeline_fifty(Slug, Player, Resource) ->
               player_store:insert(Slug, Player, Resource, Fifty-1, Clair, Rollback),
               lifeline_fifty_call(Pid, Slug);
             true ->
-              {failed, Slug, "you used lifeline:50%"}
+              {failed, Slug, "you used lifeline:fifty"}
           end;
         Ret ->
           ?ERROR_MSG("many resources of player joined ~p", [Ret]),
