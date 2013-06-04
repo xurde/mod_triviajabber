@@ -21,7 +21,8 @@
          current_question/1, get_answer/5,
          current_status/1, get_question_fifty/2,
          lifeline_fifty/3,
-         lifeline_clair/3
+         lifeline_clair/3,
+         lifeline_rollback/3
         ]).
 
 -include("ejabberd.hrl").
@@ -170,6 +171,15 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
       ?ERROR_MSG("onetime_answer(~p, ~p) = ~p",
           [Slug, Player, Ret])
   end,
+  {noreply, State};
+handle_cast({rollback, Player}, #gamestate{
+    host = _Host, slug = Slug,
+    questions = _Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
+    started = _Started, minplayers = _MinPlayers} = State) ->
+  %% remove from queue
+  onetime_delelement(Slug, Player),
+  pop_current_answer(Slug, Player),
   {noreply, State};
 handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
@@ -467,6 +477,7 @@ remove_old_player(Slug) ->
       ?ERROR_MSG("[player left] lookup : ~p", [Error])
   end.
 
+
 %% Using 50%-lifeline
 lifeline_fifty(Slug, Player, Resource) ->
   case triviajabber_store:lookup(Slug) of
@@ -477,23 +488,7 @@ lifeline_fifty(Slug, Player, Resource) ->
             Fifty > 0 ->
               player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
               player_store:insert(Slug, Player, Resource, Fifty-1, Clair, Rollback),
-              try gen_server:call(Pid, fifty) of
-                {null, notfound} ->
-                  {failed, Slug, "question havent been sent"};
-                {error, Unknown} ->
-                  ?ERROR_MSG("fifty, error ~p", [Unknown]),
-                  {failed, Slug, "not found question"};
-                {ok, Question, AnswerIdStr, QPhrase, Opt1, Opt2, Opt3, Opt4} ->
-                  {Random1, Random2} = take_two_opts(AnswerIdStr, Opt1, Opt2, Opt3, Opt4),
-                  {ok, Question, QPhrase, Random1, Random2};
-                ErrorRet ->
-                  ?ERROR_MSG("triviajabber_question:lookup ~p", [ErrorRet]),
-                  {failed, Slug, "unknown error"}
-              catch
-                EClass:Exc ->
-                  ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
-                  {failed, Slug, "exception"}
-              end;
+              lifeline_fifty_call(Pid, Slug);
             true ->
               {failed, Slug, "you used lifeline:50%"}
           end;
@@ -516,24 +511,37 @@ lifeline_clair(Slug, Player, Resource) ->
             Clair > 0 ->
               player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
               player_store:insert(Slug, Player, Resource, Fifty, Clair-1, Rollback),
-              try gen_server:call(Pid, clair) of
-                {null, notfound} ->
-                  {failed, Slug, "question havent been sent"};
-                {error, Unknown} ->
-                  ?ERROR_MSG("fifty, error ~p", [Unknown]),
-                  {failed, Slug, "not found question"};
-                {ok, Question, O1, O2, O3, O4} ->
-                  {ok, Question, O1, O2, O3, O4};
-                WhattheHell ->
-                  ?ERROR_MSG("HELL clair ~p", [WhattheHell]),
-                  {failed, Slug, "hellraiser"}
-              catch
-                EClass:Exc ->
-                  ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
-                  {failed, Slug, "exception"}
-              end;
+              lifeline_clair_call(Pid, Slug);
             true ->
               {failed, Slug, "you used lifeline:clairvoyance"}
+          end;
+        ManyRes ->
+          ?ERROR_MSG("many resources of player joined ~p", [ManyRes]),
+          {failed, Slug, "many resources of player joined in game"}
+      end;
+    {null, not_found} ->
+      {failed, Slug, "game havent started"};
+    {error, _} ->
+      {failed, Slug, "failed to find game thread"};
+    Ret ->
+      ?ERROR_MSG("lifeline_clair ~p", [Ret]),
+      {failed, Slug, "failed to lookup thread"}
+  end.
+
+lifeline_rollback(Slug, Player, Resource) ->
+  case triviajabber_store:lookup(Slug) of
+    {ok, Slug, _PoolId, Pid} ->
+      case player_store:match_object({Slug, Player, Resource, '_', '_', '_'}) of
+        [{Slug, Player, Resource, Fifty, Clair, Rollback}] ->
+          if
+            Rollback > 0 ->
+              player_store:match_delete({Slug, Player, Resource, '_', '_', '_'}),
+              player_store:insert(Slug, Player, Resource, Fifty, Clair, Rollback-1),
+              %% child handles lifeline:rollback asynchronously
+              gen_server:cast(Pid, {rollback, Player}),
+              {ok, Slug, "another chance"};
+            true ->
+              {failed, Slug, "you used lifeline:rollback"}
           end;
         ManyRes ->
           ?ERROR_MSG("many resources of player joined ~p", [ManyRes]),
@@ -607,7 +615,48 @@ get_answer(Player, Slug, Answer, ClientTime, QuestionId) ->
       ?ERROR_MSG("there's no process handle ~p: ~p",
           [Slug, Error])
   end.
-    
+
+%%% ------------------------------------
+%%% Request child handle lifeline
+%%% ------------------------------------    
+
+lifeline_fifty_call(Pid, Slug) ->
+  try gen_server:call(Pid, fifty) of
+    {null, notfound} ->
+      {failed, Slug, "question havent been sent"};
+    {error, Unknown} ->
+      ?ERROR_MSG("fifty, error ~p", [Unknown]),
+      {failed, Slug, "not found question"};
+    {ok, Question, AnswerIdStr, QPhrase, Opt1, Opt2, Opt3, Opt4} ->
+      {Random1, Random2} = take_two_opts(AnswerIdStr, Opt1, Opt2, Opt3, Opt4),
+      {ok, Question, QPhrase, Random1, Random2};
+    ErrorRet ->
+      ?ERROR_MSG("triviajabber_question:lookup ~p", [ErrorRet]),
+      {failed, Slug, "unknown error"}
+  catch
+    EClass:Exc ->
+      ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+      {failed, Slug, "exception"}
+  end.
+
+lifeline_clair_call(Pid, Slug) ->
+  try gen_server:call(Pid, clair) of
+    {null, notfound} ->
+      {failed, Slug, "question havent been sent"};
+    {error, Unknown} ->
+      ?ERROR_MSG("fifty, error ~p", [Unknown]),
+      {failed, Slug, "not found question"};
+    {ok, Question, O1, O2, O3, O4} ->
+      {ok, Question, O1, O2, O3, O4};
+    WhattheHell ->
+      ?ERROR_MSG("HELL clair ~p", [WhattheHell]),
+      {failed, Slug, "hellraiser"}
+  catch
+    EClass:Exc ->
+      ?ERROR_MSG("Exception: ~p, ~p", [EClass, Exc]),
+      {failed, Slug, "exception"}
+  end.
+
 %%% ------------------------------------
 %%% Child handles a game
 %%% ------------------------------------
@@ -760,7 +809,11 @@ onetime_delelement(Slug, Player) ->
         ?ERROR_MSG("onetime_delelement: slug ~p is empty", [Slug]);
       [E] ->
         Playersets = E#playersstate.playersets,
-        sets:del_element(Player, Playersets);
+        NewSets = sets:del_element(Player, Playersets),
+        mnesia:write(#playersstate{
+            slug = Slug,
+            playersets = NewSets
+        });
       Ret ->
         ?ERROR_MSG("onetime_delelement: slug ~p, error ~p", [Slug, Ret])
     end
@@ -901,6 +954,58 @@ get_wrong_answers(Slug) ->
       E#answer0state.wrongqueue;
     _ ->
       queue:new()
+  end.
+
+%% pop current answer
+pop_current_answer(Slug, Player) ->
+  Fun = fun() ->
+    case mnesia:read(answer0state, Slug) of
+      [] ->
+        filter_right_queue(Slug, Player);
+      [E] ->
+        Wrong = E#answer0state.wrongqueue,
+        Answer0List = queue:to_list(Wrong),
+        FiltedList = filter_list_answer(Player, Answer0List),
+        if
+          FiltedList == Answer0List ->
+            filter_right_queue(Slug, Player);        
+          true ->
+            NewQueue0 = queue:from_list(FiltedList),
+            mnesia:write(#answer0state{
+                slug = Slug,
+                wrongqueue = NewQueue0
+            })
+        end
+    end
+  end,
+  mnesia:transaction(Fun).
+
+filter_list_answer(Player, List) ->
+  lists:filter(fun({Name, _Hit}) ->
+    if
+      Name =:= Player -> false;
+      true -> true
+    end
+  end, List).
+
+filter_right_queue(Slug, Player) ->
+  case mnesia:read(answer1state, Slug) of
+    [] ->
+      ok;
+    [E] ->
+      Right = E#answer1state.rightqueue,
+      Answer1List = queue:to_list(Right),
+      FiltedList = filter_list_answer(Player, Answer1List),
+      if
+        FiltedList == Answer1List ->
+          ok;
+        true ->
+          NewQueue1 = queue:from_list(FiltedList),
+          mnesia:write(#answer1state{
+              slug = Slug,
+              rightqueue = NewQueue1
+          })
+      end
   end.
 
 %% result of previous question

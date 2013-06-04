@@ -43,6 +43,7 @@
 -define(STATUS_NODE, "status_game").
 -define(FIFTY_NODE, "fifty").
 -define(CLAIR_NODE, "clairvoyance").
+-define(ROLLBACK_NODE, "rollback").
 
 -record(sixclicksstate, {host, route,
     fifty, clairvoyance, rollback,
@@ -338,7 +339,6 @@ handle_request(#adhoc_request{node = Command} = Request,
           }
       end;
     ?CLAIR_NODE ->
-      ?WARNING_MSG("CLAIR_NODE ~p, ~p", [Items, Message]),
       case {Items, Message} of
         {{Question, O1, O2, O3, O4}, "players have answered"} ->
           lifeline_clairvoyance_xml(Question, O1, O2, O3, O4);
@@ -347,7 +347,17 @@ handle_request(#adhoc_request{node = Command} = Request,
               [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
           }
       end;
+%    ?ROLLBACK_NODE ->
+%      case {Items, Message} of
+%        {_, "another chance"} ->
+%          ok;
+%        _ ->
+%          {xmlelement,"item", Items,
+%              [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
+%          }
+%      end;
     _ ->
+      ?WARNING_MSG("~p: ~p, ~p", [Command, Items, Message]),
       {xmlelement,"item", Items,
           [{xmlelement,"value", [], [{xmlcdata, "done"}]}]
       }
@@ -364,7 +374,8 @@ send_initial_form(#adhoc_request{node = EventNode} = Request) ->
       EventNode =:= ?LEAVE_EVENT_NODE;
       EventNode =:= ?STATUS_NODE;
       EventNode =:= ?FIFTY_NODE;
-      EventNode =:= ?CLAIR_NODE ->
+      EventNode =:= ?CLAIR_NODE;
+      EventNode =:= ?ROLLBACK_NODE ->
     Form =
       {xmlelement, "x",
           [{"xmlns", ?NS_XDATA}, {"type", "form"}],
@@ -576,8 +587,30 @@ execute_command(?CLAIR_NODE, From, SixClicks, _Options,
       end;
     _ ->
       {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
+  end;
+%% "lifeline:rollback" command
+execute_command(?ROLLBACK_NODE, From, SixClicks, _Options,
+    #sixclicksstate{host = Server}) ->
+%  [RollbackId] = proplists:get_value("optionid", Options),
+%  ?WARNING_MSG("ROLLBACK optionId ~p", [RollbackId]),
+  SlugNode = ?DEFAULT_GAME_SERVICE ++ Server,
+  case SixClicks of
+    #jid{luser = GameId, lserver = SlugNode} ->
+      Player = From#jid.user,
+      Resource = From#jid.resource,
+      case triviajabber_game:lifeline_rollback(GameId, Player, Resource) of
+        {ok, Slug, Msg} ->
+          ?WARNING_MSG("another chance", []),
+          {[{"return", "true"}, {"desc", Slug}], Msg};
+        {failed, Slug2, Title} ->
+          {[{"return", "false"}, {"desc", Slug2}], Title};
+        HellRaiser ->
+          ?ERROR_MSG("lifeline_rollback returns ~p", [HellRaiser]),
+          {[{"return", "false"}, {"desc", "null"}], "hellraiser"}
+      end;
+    _ ->
+      {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end.
-
 
 %% Helpers
 get_questions_per_game(GameId, Server) ->
