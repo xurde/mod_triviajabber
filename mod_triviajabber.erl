@@ -459,7 +459,7 @@ execute_command(?JOIN_EVENT_NODE, From, SixClicks, _Options,
           Resource = From#jid.resource,
           %% then cache in player_store
           case check_player_in_game(Server, MinPlayers, GameId,
-              GamePool, GameQuestions, GameSeconds, Player) of
+              GamePool, GameQuestions, GameSeconds, Player, Resource) of
             "ok" ->
               player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
               {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
@@ -699,12 +699,13 @@ game_items(Items, GameService) ->
 %% One account can log in at many resources (devices),
 %% but don't allow them join in one game. They can play in diference room games.
 check_player_in_game(Server, MinPlayers, GameId,
-    GamePool, GameQuestions, GameSeconds, Player) ->
+    GamePool, GameQuestions, GameSeconds, Player, Resource) ->
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_', '_', '_', '_'}) of
     [] ->
       ?WARNING_MSG("insert new player ~p into ~p", [Player, GameId]),
-      triviajabber_game:take_new_player(Server, GameId, GamePool, Player,
+      triviajabber_game:take_new_player(Server, GameId, GamePool,
+          Player, Resource,
           GameQuestions, GameSeconds, MinPlayers),
       "ok";
     Res ->

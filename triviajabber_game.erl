@@ -17,7 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 %% helpers
--export([take_new_player/7, remove_old_player/1,
+-export([take_new_player/8, remove_old_player/1,
          current_question/1, get_answer/5,
          current_status/1, get_question_fifty/2,
          lifeline_fifty/3,
@@ -255,6 +255,22 @@ handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
   {stop, normal, State}.
 
+handle_info({specialone, Player, Resource}, #gamestate{
+    host = Host, slug = Slug,
+    questions = _Questions, seconds = StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
+    started = _Started, minplayers = _MinPlayers} = State) ->
+  CountdownPacket = {xmlelement, "message",
+     [{"type", "chat"}, {"id", randoms:get_string()}],
+     [{xmlelement, "countdown",
+         [{"secs", StrSeconds}],
+         [{xmlcdata, ?COUNTDOWNSTR}]}]
+  },
+  To = jlib:make_jid(Player, Host, Resource),
+  GameServer = "triviajabber." ++ Host,
+  From = jlib:make_jid(Slug, GameServer, Slug),
+  ejabberd_router:route(From, To, CountdownPacket),
+  {noreply, State};
 handle_info(countdown, #gamestate{
     host = Host, slug = Slug,
     questions = Questions, seconds = StrSeconds,
@@ -412,7 +428,8 @@ init([Host, Opts]) ->
     MinPlayers =:= 1 ->
       triviajabber_question:insert(self(), 0, null, null, 0, null,
           null, null, null, null),
-      will_send_question(Host, Slug, Seconds),
+      Resource = gen_mod:get_opt(resource, Opts, ""),
+      erlang:send_after(?DELAYNEXT1, self(), {specialone, FirstPlayer, Resource}),
       "yes";
     true ->
       triviajabber_question:insert(self(), -1, null, null, 0, null,
@@ -434,7 +451,7 @@ init([Host, Opts]) ->
 
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
-take_new_player(Host, Slug, PoolId, Player,
+take_new_player(Host, Slug, PoolId, Player, Resource,
     Questions, Seconds, MinPlayers) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, PoolId, Pid} ->
@@ -444,7 +461,8 @@ take_new_player(Host, Slug, PoolId, Player,
     {null, not_found} ->
       Opts = [{slug, Slug}, {pool_id, PoolId},
               {questions, Questions}, {seconds, Seconds},
-              {player, Player}, {minplayers, MinPlayers}],
+              {player, Player}, {resource, Resource},
+              {minplayers, MinPlayers}],
       {ok, Pid} = start_link(Host, Opts),
       ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, PoolId, Pid),
