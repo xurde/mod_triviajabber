@@ -13,7 +13,8 @@ jumble(_, Permuted_List, _, 0) ->
   Permuted_List;
  
 jumble(List, Permuted_List, Indices, Length) ->
-  Rand_Ind = random:uniform(length(List)),
+  {_, B, C} = now(),
+  Rand_Ind = ( (B + C) rem length(List) ) + 1,
   case lists:member(Rand_Ind, Indices) of
     true ->
       jumble(List, Permuted_List, Indices, Length);

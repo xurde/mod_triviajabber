@@ -270,6 +270,16 @@ handle_info({specialone, Player, Resource}, #gamestate{
   GameServer = "triviajabber." ++ Host,
   From = jlib:make_jid(Slug, GameServer, Slug),
   ejabberd_router:route(From, To, CountdownPacket),
+  case string:to_integer(StrSeconds) of
+    {Seconds, []} ->
+      erlang:send_after(Seconds * 1000, self(), countdown);
+    {RetSeconds, Reason} ->
+      ?ERROR_MSG("Error0 to convert seconds to integer {~p, ~p}",
+          [RetSeconds, Reason]);
+    Ret ->
+      ?ERROR_MSG("Error0 to convert seconds to integer ~p",
+          [Ret])
+  end,
   {noreply, State};
 handle_info(countdown, #gamestate{
     host = Host, slug = Slug,
