@@ -44,77 +44,81 @@
 -record(answer0state, {slug, wrongqueue}).
 -record(statistic, {slug, opt1, opt2, opt3, opt4}).
 -record(playersstate, {slug, playersets}). 
--record(scoresstate, {player, score}).
+-record(scoresstate, {player, score, hits, responses}).
 
 %% when new player has joined game room,
 %% check if there are enough players to start
 handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
-    host = Host,
+    host = Host, time_start = TimeStart,
     slug = Slug, pool_id = PoolId,
     questions = Questions, seconds = Seconds,
     final_players = Final, started = Started,
-    minplayers = MinPlayers}) ->
+    maxplayers = MaxPlayers, minplayers = MinPlayers}) ->
   ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p, final ~p",
       [self(), Slug, MinPlayers, Final+1]),
   mnesia:dirty_write(#scoresstate{
       player = NewComer,
-      score = 0
+      score = 0, hits = 0,
+      responses = 0
   }),
-  
+  NewMax = if
+    Final + 1 > MaxPlayers -> (Final + 1);
+    true -> MaxPlayers
+  end, 
   case Started of
     "no" ->
        List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
-       if
+       NewStarted = if
          erlang:length(List) >= MinPlayers ->
            ?WARNING_MSG("new commer fills enough players to start game", []),
            triviajabber_question:insert(self(), 0, null, null, 0, null,
                null, null, null, null),
          
            will_send_question(Host, Slug, Seconds),
-           NewState1 = #gamestate{
-               host = Host, slug = Slug,
-               questions = Questions, seconds = Seconds,
-               pool_id = PoolId, final_players = Final+1,
-               started = "yes", minplayers = MinPlayers},
-           {noreply, NewState1};
+           "yes";
          true ->
            ?WARNING_MSG("still not enough players to start game", []),
-           NewState2 = #gamestate{
-               host = Host, slug = Slug,
-               questions = Questions, seconds = Seconds,
-               pool_id = PoolId, final_players = Final+1,
-               started = "no", minplayers = MinPlayers},
-           {noreply, NewState2}
-       end;
+           "no"
+       end,
+       
+       NewState1 = #gamestate{
+           host = Host, slug = Slug, time_start = TimeStart,
+           questions = Questions, seconds = Seconds,
+           pool_id = PoolId, final_players = Final+1,
+           started = NewStarted,
+           maxplayers = NewMax, minplayers = MinPlayers},
+       {noreply, NewState1};
     Yes ->  
       ?WARNING_MSG("has game ~p started ? ~p", [Slug, Yes]),
       NewState3 = #gamestate{
-               host = Host, slug = Slug,
-               questions = Questions, seconds = Seconds,
-               pool_id = PoolId, final_players = Final+1,
-               started = Yes, minplayers = MinPlayers},
+          host = Host, slug = Slug, time_start = TimeStart,
+          questions = Questions, seconds = Seconds,
+          pool_id = PoolId, final_players = Final+1,
+          started = Yes,
+          maxplayers = NewMax, minplayers = MinPlayers},
       {noreply, NewState3}
   end;
 
 %% when one player has left
 handle_cast({left, Slug}, #gamestate{
-    host = Host,
+    host = Host, time_start = TimeStart,
     slug = Slug, pool_id = PoolId,
     questions = Questions, seconds = Seconds,
     final_players = Final, started = Started,
-    minplayers = MinPlayers}) ->
+    maxplayers = MaxPlayers, minplayers = MinPlayers}) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p", [self(), Slug]),
   NewState =  #gamestate{host = Host,
-      slug = Slug, pool_id = PoolId,
+      slug = Slug, pool_id = PoolId, time_start = TimeStart,
       questions = Questions, seconds = Seconds,
       final_players = Final-1, started = Started,
-      minplayers = MinPlayers},
+      maxplayers = MaxPlayers, minplayers = MinPlayers},
   {noreply, NewState};
 handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
-    host = _Host, slug = Slug,
+    host = _Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers, 
+    minplayers = _MinPlayers} = State) ->
   case onetime_answer(Slug, Player) of
     {atomic, true} ->
 % using questionstate
@@ -173,10 +177,11 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
   end,
   {noreply, State};
 handle_cast({rollback, Player}, #gamestate{
-    host = _Host, slug = Slug,
+    host = _Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   %% remove from queue
   onetime_delelement(Slug, Player),
   pop_current_answer(Slug, Player),
@@ -187,10 +192,11 @@ handle_cast(Msg, State) ->
 
 %% client request game status
 handle_call(gamestatus, _From, #gamestate{
-    host = _Host, slug = _Slug,
+    host = _Host, slug = _Slug, time_start = _TimeStart,
     questions = Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers, 
+    minplayers = _MinPlayers} = State) ->
   case triviajabber_question:lookup(self()) of
     {ok, _, Q, _, _, _, _QPhrase, _, _, _, _} ->
       QuestionNumStr = erlang:integer_to_list(Q),
@@ -201,10 +207,11 @@ handle_call(gamestatus, _From, #gamestate{
   end;
 %% handle lifeline:fifty
 handle_call(fifty, _From, #gamestate{
-    host = _Host, slug = _Slug,
+    host = _Host, slug = _Slug, time_start = _TimeStart,
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   Reply = case triviajabber_question:lookup(self()) of
     {ok, _Pid, Question, AnswerId, _QuestionId, _Time, QPhrase,
         Opt1, Opt2, Opt3, Opt4} ->
@@ -222,10 +229,11 @@ handle_call(fifty, _From, #gamestate{
   {reply, Reply, State};
 %% handle lifeline:clairvoyance
 handle_call(clair, _From, #gamestate{
-    host = _Host, slug = Slug,
+    host = _Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   Reply = case triviajabber_question:lookup(self()) of
     {ok, _, Question, _AnswerId, _QuesId, _Time, _QPhrase,
         _O1, _O2, _O3, _O4} ->
@@ -256,10 +264,11 @@ handle_call(stop, _From, State) ->
   {stop, normal, State}.
 
 handle_info({specialone, Player, Resource}, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   CountdownPacket = {xmlelement, "message",
      [{"type", "chat"}, {"id", randoms:get_string()}],
      [{xmlelement, "countdown",
@@ -282,10 +291,11 @@ handle_info({specialone, Player, Resource}, #gamestate{
   end,
   {noreply, State};
 handle_info(countdown, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = _TimeStart,
     questions = Questions, seconds = StrSeconds,
     pool_id = PoolId, final_players = Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = _MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   QuestionIds = question_ids(Host, PoolId, Questions),
   ?WARNING_MSG("from ~p (~p), list ~p", [Slug, Questions, QuestionIds]),
   case QuestionIds of
@@ -307,13 +317,15 @@ handle_info(countdown, #gamestate{
       {noreply, State}
   end;
 handle_info({questionslist, QuestionIds, Step}, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = TimeStart,
     pool_id = PoolId, questions = Questions,
     seconds = StrSeconds, final_players = Final,
-    started = _Started, minplayers = _MinPlayers} = State) ->
+    started = _Started, maxplayers = MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   case QuestionIds of
     [] ->
-      finish_game(Host, Slug, PoolId, Final, Step, Questions),
+      finish_game(Host, Slug, PoolId, Final, Step, Questions,
+          TimeStart, MaxPlayers),
       {stop, normal, State};
     [{LastQuestion}] ->
       send_status(Host, Slug, Final, Questions, Step),
@@ -329,19 +341,19 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       {noreply, State}
   end;
 handle_info({rankinggame, List, RankingGame}, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = _TimeStart,
     pool_id = _PoolId, questions = _Questions,
     seconds = _StrSeconds, final_players = _Final,
-    started = _Started,
+    started = _Started, maxplayers = _MaxPlayers,
     minplayers = _MinPlayers} = State) ->
   ?WARNING_MSG("ranking-game ...", []),
   broadcast_msg(Host, Slug, List, RankingGame),
   {noreply, State};
 handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = _TimeStart,
     pool_id = _PoolId, questions = _Questions,
     seconds = StrSeconds, final_players = _Final,
-    started = _Started,
+    started = _Started, maxplayers = _MaxPlayers,
     minplayers = _MinPlayers} = State) ->
   MsgId = Slug ++ randoms:get_string(),
   QLstLen = erlang:length(QLst),
@@ -368,13 +380,15 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
   broadcast_msg(Host, Slug, List, QuestionPacket),
   {noreply, State};
 handle_info(killafter, #gamestate{
-    host = Host, slug = Slug,
+    host = Host, slug = Slug, time_start = TimeStart,
     pool_id = PoolId, questions = Questions,
     seconds = _StrSeconds, final_players = Final,
-    started = Started, minplayers = _MinPlayers} = State) ->
+    started = Started, maxplayers = MaxPlayers,
+    minplayers = _MinPlayers} = State) ->
   if
     Started =:= "yes", Questions > 0 ->
-      finish_game(Host, Slug, PoolId, Final, 1, Questions);
+      finish_game(Host, Slug, PoolId, Final, 1, Questions,
+          TimeStart, MaxPlayers);
     true ->
       ok
   end,
@@ -431,7 +445,8 @@ init([Host, Opts]) ->
       [self(), Slug, PoolId, Questions, Seconds]),
   mnesia:dirty_write(#scoresstate{
       player = FirstPlayer,
-      score = 0
+      score = 0, hits = 0,
+      responses = 0
   }),
 
   Started = if
@@ -447,10 +462,11 @@ init([Host, Opts]) ->
       "no"
   end,
   {ok, #gamestate{
-      host = Host,
+      host = Host, time_start = erlang:now(),
       slug = Slug, pool_id = PoolId,
       questions = Questions, seconds = Seconds,
       final_players = 1, minplayers = MinPlayers,
+      maxplayers = 1,
       started = Started}
   }.
 
@@ -1064,10 +1080,12 @@ next_question(StrSeconds, Tail, Step) ->
           [Ret])
   end.
 
-finish_game(_, _Slug, _PoolId, _Final, 1, _Questions) ->
+finish_game(_, _Slug, _PoolId, _Final, 1, _Questions,
+    TimeStart, MaxPlayers) ->
   %% TODO: update scores of players in Redis
   ok;
-finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
+finish_game(Server, Slug, PoolId, Final, Step, Questions
+    TimeStart, MaxPlayers) ->
   ?WARNING_MSG("game ~p (pool ~p) finished, final ~p",
       [Slug, PoolId, Final]),
   %% update score after game has finished
@@ -1104,6 +1122,18 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions) ->
   },
   broadcast_msg(Server, Slug, List, RankingGame),
   ok.
+
+redis_store_scores(_, _, []) ->
+  ok;
+redis_store_scores(Server, StartTime, [PlayerStore|Tail]) ->
+  {{Year,Month,Day},{_Hour,_Min,_Sec} = 
+      StartTime,
+  {_Year, Week} =
+      calendar:iso_week_number({Year,Month,Day}),
+  {Slug, Player, _, _, _, _} = PlayerStore,
+  
+  Alltime = "room-" ++ Slug ++ "-alltime",
+  redis_
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
@@ -1327,21 +1357,31 @@ negative_scores(Queue, Final, Ret, Position) ->
 update_score([], Ret) ->
   Ret;
 update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
+  {Gap, Response} = if
+    Score > 0 -> {1, 1};
+    Score < 0 -> {-1, 1};
+    true -> {0, 0};
+  end,
   case mnesia:dirty_read(scoresstate, Player) of
     [] ->
       ?ERROR_MSG("Dont find ~p in scoresstate", [Player]),
       mnesia:dirty_write(#scoresstate{
         player = Player,
-        score = Score
+        score = Score, hits = Gap,
+        responses = Response
       }),
       update_score(Tail, Ret);
     [E] ->
       GameScore = E#scoresstate.score + Score,
+      NewHit = E#scoresstate.hits + Gap,
+      NewRes = E#scoresstate.responses + Response,
       mnesia:dirty_write(#scoresstate{
         player = Player,
-        score = GameScore
+        score = GameScore, hits = NewHit,
+        responses = NewRes
       }),
-      ?WARNING_MSG("update_score(~p, ~p) = ~p", [Player, Score, GameScore]),
+      ?WARNING_MSG("update_score(~p, ~p, hit:~p, res:~p) = ~p",
+          [Player, Score, NewHit, NewRes, GameScore]),
       AddTag = questionranking_player_tag(
           Player, Time, Pos, Score),
       update_score(Tail, [AddTag|Ret]);

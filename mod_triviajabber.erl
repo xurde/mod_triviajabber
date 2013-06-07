@@ -23,8 +23,8 @@
          terminate/2, code_change/3]).
 
 %% helpers
--export([iq_disco_items/3, get_room_occupants/2,
-         start_link/2]).
+-export([iq_disco_items/3, get_room_occupants/2, start_link/2,
+         redis_zincrby/4, redis_hincrby/4]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -804,3 +804,53 @@ lifeline_fifty_xml(Step, Int1Id, Int2Id) ->
     ]
   }.
 
+%%% ------------------------------------
+%%% Access Redis
+%%% ------------------------------------
+
+redis_client(Server) ->
+  case whereis(eredis_driver) of
+    undefined ->
+      case eredis:start_link(redis_host(Server), redis_port(Server), redis_db(Server)) of
+        {ok, Client} ->
+          register(eredis_driver, Client),
+          {ok, Client};
+        {error, Reason} ->
+          {error, Reason}
+      end;
+    Pid ->
+      {ok, Pid}
+  end.
+
+redis_host(Server) ->
+  gen_mod:get_module_opt(Server, ?MODULE, redis_host, "127.0.0.1").
+
+redis_port(Server) ->
+  gen_mod:get_module_opt(Server, ?MODULE, redis_port, 6379).
+
+redis_db(Server) ->
+  gen_mod:get_module_opt(Server, ?MODULE, redis_db, 0).
+
+redis_zincrby(Server, Key, Increment, Member) ->
+  case redis_client(Server) of
+    {ok, Client} ->
+      eredis:q(Client, ["ZINCRBY", Key, Increment, Member]);
+    {error, Error} ->
+      ?ERROR_MSG("Cant connect to redis server: ~p", [Error]),
+      error;
+    Any ->
+      ?ERROR_MSG("redis server: ~p", [Any]),
+      unknown
+  end.
+
+redis_hincrby(Server, Key, Field, Increment) ->
+  case redis_client(Server) of
+    {ok, Client} ->
+      eredis:q(Client, ["HINCRBY", Key, Field, Increment]);
+    {error, Error} ->
+      ?ERROR_MSG("Cant connect to redis server: ~p", [Error]),
+      error;
+    Any ->
+      ?ERROR_MSG("redis server: ~p", [Any]),
+      unknown
+  end.
