@@ -37,13 +37,16 @@
 -define(REASONABLE, 5000).
 -define(COUNTDOWNSTR, "Game is about to start. Please wait for other players to join.").
 
--record(gamestate, {host, slug, pool_id,
-    questions, seconds, final_players,
+-record(gamestate, {host, slug, pool_id, time_start,
+    questions, seconds, final_players, maxplayers,
     minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 -record(answer1state, {slug, rightqueue}).
 -record(answer0state, {slug, wrongqueue}).
+%% how players have answer current question
 -record(statistic, {slug, opt1, opt2, opt3, opt4}).
--record(playersstate, {slug, playersets}). 
+%% set of players who have answered current question
+-record(playersstate, {slug, playersets}).
+%% score, hits, responses of player in current game
 -record(scoresstate, {player, score, hits, responses}).
 
 %% when new player has joined game room,
@@ -390,6 +393,7 @@ handle_info(killafter, #gamestate{
       finish_game(Host, Slug, PoolId, Final, 1, Questions,
           TimeStart, MaxPlayers);
     true ->
+      %% Don't update Redis when game hasn't been started
       ok
   end,
 %%  recycle_game(self(), Slug),
@@ -462,7 +466,7 @@ init([Host, Opts]) ->
       "no"
   end,
   {ok, #gamestate{
-      host = Host, time_start = erlang:now(),
+      host = Host, time_start = erlang:universaltime(),
       slug = Slug, pool_id = PoolId,
       questions = Questions, seconds = Seconds,
       final_players = 1, minplayers = MinPlayers,
@@ -1081,11 +1085,12 @@ next_question(StrSeconds, Tail, Step) ->
   end.
 
 finish_game(_, _Slug, _PoolId, _Final, 1, _Questions,
-    TimeStart, MaxPlayers) ->
+    _TimeStart, _MaxPlayers) ->
   %% TODO: update scores of players in Redis
+  traverse_scoresstate(),
   ok;
-finish_game(Server, Slug, PoolId, Final, Step, Questions
-    TimeStart, MaxPlayers) ->
+finish_game(Server, Slug, PoolId, Final, Step, Questions,
+    _TimeStart, _MaxPlayers) ->
   ?WARNING_MSG("game ~p (pool ~p) finished, final ~p",
       [Slug, PoolId, Final]),
   %% update score after game has finished
@@ -1121,19 +1126,35 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions
       ]
   },
   broadcast_msg(Server, Slug, List, RankingGame),
+  traverse_scoresstate(),
   ok.
-
-redis_store_scores(_, _, []) ->
-  ok;
-redis_store_scores(Server, StartTime, [PlayerStore|Tail]) ->
-  {{Year,Month,Day},{_Hour,_Min,_Sec} = 
-      StartTime,
-  {_Year, Week} =
-      calendar:iso_week_number({Year,Month,Day}),
-  {Slug, Player, _, _, _, _} = PlayerStore,
+%% save data of each player in redis;
+%% return {maxscore, totalscore};
+%% save in MySql
+traverse_scoresstate() ->
+  Iterator =  fun(Rec, [{Max, Total}])->
+    #scoresstate{
+        player = Player,
+        score = Score,
+        hits = Hits,
+        responses = Response
+    } = Rec,
+    %% TODO: redis
+    ?WARNING_MSG("traverse ~p: ~p, ~p, ~p", [Player, Score, Hits, Response]),
+    NewMax = if
+      Score > Max -> Score;
+      true -> Max
+    end,
+    [{NewMax, Total + Score}]
+  end,
+  Return = case mnesia:is_transaction() of
+    true ->
+      mnesia:foldl(Iterator, [{0, 0}], scoresstate);
+    false ->
+      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [{0, 0}],Tab) end,
+      mnesia:activity(transaction,Exec,[{Iterator,scoresstate}],mnesia_frag)
+  end,
   
-  Alltime = "room-" ++ Slug ++ "-alltime",
-  redis_
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
@@ -1160,7 +1181,7 @@ question_ids(Server, PoolId, Questions) ->
   if
     Questions > 0 ->
       try ejabberd_odbc:sql_query(Server,
-          ["select question_id from sixclicks_questions "
+          ["select question_id from triviajabber_questions "
            "where pool_id='", PoolId, "' order by rand() "
            "limit ", Questions]) of
         {selected, ["question_id"], []} ->
@@ -1187,7 +1208,7 @@ question_ids(Server, PoolId, Questions) ->
 get_question_info(Server, QuestionId) ->
   try ejabberd_odbc:sql_query(Server,
       ["select question, answer, option1, option2, option3 "
-       "from sixclicks_questions where question_id='", QuestionId, "'"]) of
+       "from triviajabber_questions where question_id='", QuestionId, "'"]) of
     {selected, ["question", "answer", "option1", "option2", "option3"],
         []} ->
       ?ERROR_MSG("Query question info: Empty", []),
@@ -1209,7 +1230,7 @@ get_question_info(Server, QuestionId) ->
 get_question_fifty(Server, QuestionId) ->
   try ejabberd_odbc:sql_query(Server,
       ["select question, answer, option1, option2, option3 "
-       "from sixclicks_questions where question_id='", QuestionId, "'"]) of
+       "from triviajabber_questions where question_id='", QuestionId, "'"]) of
     {selected, ["question", "answer", "option1", "option2", "option3"],
         []} ->
       ?ERROR_MSG("Query question info: Empty", []),
@@ -1358,9 +1379,12 @@ update_score([], Ret) ->
   Ret;
 update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
   {Gap, Response} = if
-    Score > 0 -> {1, 1};
-    Score < 0 -> {-1, 1};
-    true -> {0, 0};
+    Score > 0 ->
+      {1, 1}; %% one hit, one response
+    Score < 0 ->
+      {0, 1}; %% no hit, one response
+    true ->
+      {0, 0} %% no hit, no response
   end,
   case mnesia:dirty_read(scoresstate, Player) of
     [] ->

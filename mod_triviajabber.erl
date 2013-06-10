@@ -431,7 +431,7 @@ game_disco_items(Server, GameService) ->
       TrialGames = add_games(GameService, "Trial", Trial, RegulGames),
       TrialGames;
     Reason ->
-      ?ERROR_MSG("failed to query sixclicks_rooms ~p", [Reason]),
+      ?ERROR_MSG("failed to query triviajabber_rooms ~p", [Reason]),
       []
   catch
     Res2:Desc2 ->
@@ -471,7 +471,7 @@ execute_command(?JOIN_EVENT_NODE, From, SixClicks, _Options,
             "seconds_per_question"], [{OtherName, _OtherId, _, _, _}]} ->
           {[{"return", "false"}, {"desc", OtherName}], "Error in database"};
         Reason ->
-          ?ERROR_MSG("failed to query sixclicks_rooms ~p", [Reason]),
+          ?ERROR_MSG("failed to query triviajabber_rooms ~p", [Reason]),
           {[{"return", "false"}, {"desc", "null"}], "Failed to find game"}
       catch
         Res2:Desc2 ->
@@ -615,20 +615,20 @@ execute_command(?ROLLBACK_NODE, From, SixClicks, _Options,
 %% Helpers
 get_questions_per_game(GameId, Server) ->
   ejabberd_odbc:sql_query(Server,
-      ["select questions_per_game from sixclicks_rooms "
+      ["select questions_per_game from triviajabber_rooms "
        "where slug='", GameId, "'"]
   ).
 %% Get game name, pool_id, questions_per_game, seconds_per_question
 get_game_room(GameId, Server) ->
   ejabberd_odbc:sql_query(Server,
       ["select name, slug, pool_id, questions_per_game, seconds_per_question "
-       "from sixclicks_rooms where slug='", GameId, "'"]
+       "from triviajabber_rooms where slug='", GameId, "'"]
   ).
 
 get_all_game_rooms(Server) ->
   ejabberd_odbc:sql_query(Server,
       ["select name, level, questions_per_game, "
-       "slug, topic from sixclicks_rooms"]
+       "slug, topic from triviajabber_rooms"]
   ).
 
 filter_games([], {T, R, O}) ->
@@ -804,6 +804,71 @@ lifeline_fifty_xml(Step, Int1Id, Int2Id) ->
     ]
   }.
 
+%%% ------------------------------------
+%%% Access triviajabber_games table
+%%% ------------------------------------
+
+%% {Date, Time} = erlang:universaltime().
+utc_sql_datetime(Date, Time) ->
+  {Year, Month, Day} = Date,
+  {Hour, Minute, Second} = Time,
+  lists:flatten(
+      io_lib:format("~4..0w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w",
+          [Year, Month, Day, Hour, Minute, Second])).
+
+%% add row into triviajabber_games table
+triviajabber_games(Server, Date, Time, Slug,
+    PlayersMax, WinnerScore, TotalScore) ->
+  try get_games_counter(Server, Slug) of
+    {selected,["room_id", "games_counter"],[{RoomIdStr, CounterStr}]} ->
+      Counter = erlang:list_to_integer(CounterStr),
+      IncCounter = Counter + 1,
+      set_games_counter(Server, Slug, IncCounter),
+      set_triviajabber_games(Server, Date, Time, RoomIdStr, IncCounter,
+          PlayersMax, WinnerScore, TotalScore);
+    {selected,["room_id", "games_counter"], List} ->
+      ?ERROR_MSG("[room_id, games_counter] returns list: ~p", [List]);
+    Reason ->
+      ?ERROR_MSG("room_id, games_counter: ~p", [Reason])    
+  catch
+    Res2:Desc2 ->
+      ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2]),
+      {[{"return", "false"}, {"desc", "null"}], "Exception when query game room"}
+  end.
+
+%% get games_counter
+get_games_counter(Server, Slug) ->
+  ejabberd_odbc:sql_query(Server,
+      ["select room_id, games_counter from triviajabber_rooms "
+          "where slug='", Slug, "'"]
+  ).
+
+%% set games_counter
+set_games_counter(Server, Slug, Counter) ->
+  CounterStr = erlang:integer_to_list(Counter),
+  ejabberd_odbc:sql_query(Server,
+      ["update triviajabber_rooms set games_counter = '", CounterStr, "' "
+          "where slug='", Slug, "'"]
+  ).
+
+set_triviajabber_games(Server, Date, Time, RoomIdStr, Counter,
+    PlayersMax, WinnerScore, TotalScore) ->
+  StartTime = utc_sql_datetime(Date, Time),
+  {EDate, ETime} = erlang:universaltime(),
+  EndTime = utc_sql_datetime(EDate, ETime),
+  CounterStr = erlang:integer_to_list(Counter),
+  MaxStr = erlang:integer_to_list(PlayersMax),
+  WinnerStr = erlang:integer_to_list(WinnerScore),
+  TotalStr = erlang:integer_to_list(TotalScore),
+  ejabberd_odbc:sql_query(Server,
+      ["insert into triviajabber_rooms ("
+          "room_id, created_at, updated_at, time_start, time_end, " 
+          "counter, players_max, winner_score, total_score"
+          ") values('", RoomIdStr, "', '", StartTime, "', '", EndTime,
+          "', '", StartTime, "', '", EndTime, "', '",
+          CounterStr, "', '", MaxStr, "', '", WinnerStr, "', '",
+          TotalStr, "')"]
+  ).
 %%% ------------------------------------
 %%% Access Redis
 %%% ------------------------------------
