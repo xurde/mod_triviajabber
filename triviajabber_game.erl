@@ -76,7 +76,6 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
            ?WARNING_MSG("new commer fills enough players to start game", []),
            triviajabber_question:insert(self(), 0, null, null, 0, null,
                null, null, null, null),
-         
            will_send_question(Host, Slug, Seconds),
            "yes";
          true ->
@@ -92,7 +91,6 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
            maxplayers = NewMax, minplayers = MinPlayers},
        {noreply, NewState1};
     Yes ->  
-      ?WARNING_MSG("has game ~p started ? ~p", [Slug, Yes]),
       NewState3 = #gamestate{
           host = Host, slug = Slug, time_start = TimeStart,
           questions = Questions, seconds = Seconds,
@@ -167,6 +165,9 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               push_wrong_answer(Slug, Player, HitTime0Y),
               statistic_answer(Slug, Answer)
           end;
+        [] ->
+          ?WARNING_MSG("~p has answered late, but we dont count", [Player]),
+          onetime_delelement(Slug, Player);
         Ret ->
           ?WARNING_MSG("~p answered uncorrectly: ~p",
               [Player, Ret])
@@ -1084,13 +1085,13 @@ next_question(StrSeconds, Tail, Step) ->
           [Ret])
   end.
 
-finish_game(_, _Slug, _PoolId, _Final, 1, _Questions,
-    _TimeStart, _MaxPlayers) ->
+finish_game(Server, Slug, _PoolId, _Final, 1, _Questions,
+    TimeStart, MaxPlayers) ->
   %% TODO: update scores of players in Redis
-  traverse_scoresstate(),
+  traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
   ok;
 finish_game(Server, Slug, PoolId, Final, Step, Questions,
-    _TimeStart, _MaxPlayers) ->
+    TimeStart, MaxPlayers) ->
   ?WARNING_MSG("game ~p (pool ~p) finished, final ~p",
       [Slug, PoolId, Final]),
   %% update score after game has finished
@@ -1126,12 +1127,12 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions,
       ]
   },
   broadcast_msg(Server, Slug, List, RankingGame),
-  traverse_scoresstate(),
+  traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
   ok.
 %% save data of each player in redis;
 %% return {maxscore, totalscore};
 %% save in MySql
-traverse_scoresstate() ->
+traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
   Iterator =  fun(Rec, [{Max, Total}])->
     #scoresstate{
         player = Player,
@@ -1154,7 +1155,15 @@ traverse_scoresstate() ->
       Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [{0, 0}],Tab) end,
       mnesia:activity(transaction,Exec,[{Iterator,scoresstate}],mnesia_frag)
   end,
-  
+  case Return of
+    [{WinnerScore, TotalScore}] ->
+      {Date, Time} = TimeStart,
+      ?WARNING_MSG("triviajabber_games: ~p, ~p, ~p, ~p", [Slug, MaxPlayers, WinnerScore, TotalScore]),
+      mod_triviajabber:games_table(Server, Date, Time, Slug,
+          MaxPlayers, WinnerScore, TotalScore);
+    Error ->
+      ?ERROR_MSG("interate scoresstate: ~p", [Error])  
+  end. 
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),

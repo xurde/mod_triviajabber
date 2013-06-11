@@ -24,6 +24,7 @@
 
 %% helpers
 -export([iq_disco_items/3, get_room_occupants/2, start_link/2,
+         games_table/7,
          redis_zincrby/4, redis_hincrby/4]).
 
 -include("ejabberd.hrl").
@@ -817,23 +818,22 @@ utc_sql_datetime(Date, Time) ->
           [Year, Month, Day, Hour, Minute, Second])).
 
 %% add row into triviajabber_games table
-triviajabber_games(Server, Date, Time, Slug,
-    PlayersMax, WinnerScore, TotalScore) ->
+games_table(Server, Date, Time, Slug,
+    MaxPlayers, WinnerScore, TotalScore) ->
   try get_games_counter(Server, Slug) of
     {selected,["room_id", "games_counter"],[{RoomIdStr, CounterStr}]} ->
       Counter = erlang:list_to_integer(CounterStr),
       IncCounter = Counter + 1,
       set_games_counter(Server, Slug, IncCounter),
       set_triviajabber_games(Server, Date, Time, RoomIdStr, IncCounter,
-          PlayersMax, WinnerScore, TotalScore);
+          MaxPlayers, WinnerScore, TotalScore);
     {selected,["room_id", "games_counter"], List} ->
       ?ERROR_MSG("[room_id, games_counter] returns list: ~p", [List]);
     Reason ->
       ?ERROR_MSG("room_id, games_counter: ~p", [Reason])    
   catch
     Res2:Desc2 ->
-      ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2]),
-      {[{"return", "false"}, {"desc", "null"}], "Exception when query game room"}
+      ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2])
   end.
 
 %% get games_counter
@@ -852,16 +852,16 @@ set_games_counter(Server, Slug, Counter) ->
   ).
 
 set_triviajabber_games(Server, Date, Time, RoomIdStr, Counter,
-    PlayersMax, WinnerScore, TotalScore) ->
+    MaxPlayers, WinnerScore, TotalScore) ->
   StartTime = utc_sql_datetime(Date, Time),
   {EDate, ETime} = erlang:universaltime(),
   EndTime = utc_sql_datetime(EDate, ETime),
   CounterStr = erlang:integer_to_list(Counter),
-  MaxStr = erlang:integer_to_list(PlayersMax),
+  MaxStr = erlang:integer_to_list(MaxPlayers),
   WinnerStr = erlang:integer_to_list(WinnerScore),
   TotalStr = erlang:integer_to_list(TotalScore),
   ejabberd_odbc:sql_query(Server,
-      ["insert into triviajabber_rooms ("
+      ["insert into triviajabber_games ("
           "room_id, created_at, updated_at, time_start, time_end, " 
           "counter, players_max, winner_score, total_score"
           ") values('", RoomIdStr, "', '", StartTime, "', '", EndTime,
