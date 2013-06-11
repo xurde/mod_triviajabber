@@ -824,16 +824,30 @@ games_table(Server, Date, Time, Slug,
     {selected,["room_id", "games_counter"],[{RoomIdStr, CounterStr}]} ->
       Counter = erlang:list_to_integer(CounterStr),
       IncCounter = Counter + 1,
+      ?WARNING_MSG("room_id(~p), games_counter(~p), inc = ~p", [RoomIdStr, CounterStr, IncCounter]),
       set_games_counter(Server, Slug, IncCounter),
-      set_triviajabber_games(Server, Date, Time, RoomIdStr, IncCounter,
-          MaxPlayers, WinnerScore, TotalScore);
+      try set_triviajabber_games(Server, Date, Time, RoomIdStr, IncCounter,
+          MaxPlayers, WinnerScore, TotalScore) of
+        {updated,1} ->
+          IncCounter;
+        Any ->
+          ?ERROR_MSG("inser games row: ~p", [Any]),
+          -1
+      catch
+        Res1:Desc1 ->
+          ?ERROR_MSG("Exception1 ~p, ~p", [Res1, Desc1]),
+          -2
+      end;
     {selected,["room_id", "games_counter"], List} ->
-      ?ERROR_MSG("[room_id, games_counter] returns list: ~p", [List]);
+      ?ERROR_MSG("[room_id, games_counter] returns list: ~p", [List]),
+      -3;
     Reason ->
-      ?ERROR_MSG("room_id, games_counter: ~p", [Reason])    
+      ?ERROR_MSG("room_id, games_counter: ~p", [Reason]),
+      -4
   catch
     Res2:Desc2 ->
-      ?ERROR_MSG("Exception ~p, ~p", [Res2, Desc2])
+      ?ERROR_MSG("Exception2 ~p, ~p", [Res2, Desc2]),
+      -5
   end.
 
 %% get games_counter

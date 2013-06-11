@@ -1087,8 +1087,8 @@ next_question(StrSeconds, Tail, Step) ->
 
 finish_game(Server, Slug, _PoolId, _Final, 1, _Questions,
     TimeStart, MaxPlayers) ->
-  %% TODO: update scores of players in Redis
   traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
+  %% TODO: store_game
   ok;
 finish_game(Server, Slug, PoolId, Final, Step, Questions,
     TimeStart, MaxPlayers) ->
@@ -1127,12 +1127,15 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions,
       ]
   },
   broadcast_msg(Server, Slug, List, RankingGame),
-  traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
+  LastId = traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
+  %% TODO: store_game
+  ?WARNING_MSG("traverse_scoresstate = ~p", [LastId]),
   ok.
 %% save data of each player in redis;
 %% return {maxscore, totalscore};
 %% save in MySql
 traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
+  {Date, Time} = TimeStart,
   Iterator =  fun(Rec, [{Max, Total}])->
     #scoresstate{
         player = Player,
@@ -1140,30 +1143,31 @@ traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
         hits = Hits,
         responses = Response
     } = Rec,
-    %% TODO: redis
-    ?WARNING_MSG("traverse ~p: ~p, ~p, ~p", [Player, Score, Hits, Response]),
+    %% TODO: redis store_scores
+    ?WARNING_MSG("store_scores ~p: ~p, ~p, ~p", [Player, Score, Hits, Response]),
+    
     NewMax = if
       Score > Max -> Score;
       true -> Max
     end,
     [{NewMax, Total + Score}]
   end,
-  Return = case mnesia:is_transaction() of
-    true ->
-      mnesia:foldl(Iterator, [{0, 0}], scoresstate);
-    false ->
-      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [{0, 0}],Tab) end,
-      mnesia:activity(transaction,Exec,[{Iterator,scoresstate}],mnesia_frag)
-  end,
-  case Return of
+%  Return = case mnesia:is_transaction() of
+%    true ->
+%      mnesia:foldl(Iterator, [{0, 0}], scoresstate);
+%    false ->
+%      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [{0, 0}],Tab) end,
+%      mnesia:activity(transaction,Exec,[{Iterator,scoresstate}],mnesia_frag)
+%  end,
+  case fold_table(scoresstate, Iterator, [{0, 0}]) of
     [{WinnerScore, TotalScore}] ->
-      {Date, Time} = TimeStart,
       ?WARNING_MSG("triviajabber_games: ~p, ~p, ~p, ~p", [Slug, MaxPlayers, WinnerScore, TotalScore]),
       mod_triviajabber:games_table(Server, Date, Time, Slug,
           MaxPlayers, WinnerScore, TotalScore);
     Error ->
-      ?ERROR_MSG("interate scoresstate: ~p", [Error])  
-  end. 
+      ?ERROR_MSG("interate scoresstate: ~p", [Error]),
+      -6
+  end.
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
@@ -1405,7 +1409,12 @@ update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
       }),
       update_score(Tail, Ret);
     [E] ->
-      GameScore = E#scoresstate.score + Score,
+      GameScore = if %% only show positive score
+        E#scoresstate.score + Score > 0 ->
+          E#scoresstate.score + Score;
+        true ->
+          0
+      end,
       NewHit = E#scoresstate.hits + Gap,
       NewRes = E#scoresstate.responses + Response,
       mnesia:dirty_write(#scoresstate{
@@ -1480,4 +1489,15 @@ find_answer([Head|Tail], Asw) ->
     _ ->
       find_answer(Tail, Asw)
   end.
+
+%% iterate TableName
+fold_table(TableName, Iterator, Acc) ->
+  case mnesia:is_transaction() of
+    true ->
+      mnesia:foldl(Iterator, Acc, TableName);
+    false ->
+      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, Acc, Tab) end,
+      mnesia:activity(transaction,Exec,[{Iterator, TableName}],mnesia_frag)
+  end.
+
 
