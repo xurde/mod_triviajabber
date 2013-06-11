@@ -1087,9 +1087,15 @@ next_question(StrSeconds, Tail, Step) ->
 
 finish_game(Server, Slug, _PoolId, _Final, 1, _Questions,
     TimeStart, MaxPlayers) ->
-  traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
-  %% TODO: store_game
-  ok;
+  LastId = traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers),
+  if
+    LastId > 0 ->
+      Last = erlang:integer_to_list(LastId),
+      GameCounterStr = "game-" ++ Slug ++ "-" ++ Last,
+      traverse_scoresstate2(Server, GameCounterStr);
+    true ->
+      ?ERROR_MSG("Slug ~p insert row into games table returning ~p", [LastId])
+  end;
 finish_game(Server, Slug, PoolId, Final, Step, Questions,
     TimeStart, MaxPlayers) ->
   ?WARNING_MSG("game ~p (pool ~p) finished, final ~p",
@@ -1127,15 +1133,24 @@ finish_game(Server, Slug, PoolId, Final, Step, Questions,
       ]
   },
   broadcast_msg(Server, Slug, List, RankingGame),
-  LastId = traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers),
-  %% TODO: store_game
-  ?WARNING_MSG("traverse_scoresstate = ~p", [LastId]),
-  ok.
-%% save data of each player in redis;
+  LastId = traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers),
+  if
+    LastId > 0 ->
+      Last = erlang:integer_to_list(LastId),
+      GameCounterStr = "game-" ++ Slug ++ "-" ++ Last,
+      traverse_scoresstate2(Server, GameCounterStr);
+    true ->
+      ?ERROR_MSG("Slug ~p insert row into games table returning ~p", [LastId])
+  end.
+
+%% store_score;
 %% return {maxscore, totalscore};
 %% save in MySql
-traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
+traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers) ->
   {Date, Time} = TimeStart,
+  {Day, Month, Year} = Date,
+  {_, Week} = calendar:iso_week_number({Day,Month,Year}),
+  Raddress = "room-" ++ Slug,
   Iterator =  fun(Rec, [{Max, Total}])->
     #scoresstate{
         player = Player,
@@ -1143,22 +1158,31 @@ traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
         hits = Hits,
         responses = Response
     } = Rec,
-    %% TODO: redis store_scores
+    %% redis store_scores
     ?WARNING_MSG("store_scores ~p: ~p, ~p, ~p", [Player, Score, Hits, Response]),
-    
+    RedisData = {Score, Hits, Responses},
+    case RedisData of
+      {0, 0, 0} ->
+        ok; %% dont have to update
+      _ ->
+        Alltime = Raddress ++ "-alltime",
+        redis_store_scores_alltime(Server, Alltime, Player, Score, Hits, Responses),
+        Yearly = Raddress ++ "-year:" ++ erlang:integer_to_list(Year),
+        redis_store_scores_alltime(Server, Yearly, Player, Score, Hits, Responses),
+        Monthly = Raddress ++ "-month:" ++ erlang:integer_to_list(Month),
+        redis_store_scores_alltime(Server, Monthly, Player, Score, Hits, Responses),
+        Weekly = Raddress ++ "-week:" ++ erlang:integer_to_list(Week),
+        redis_store_scores_alltime(Server, Weekly, Player, Score, Hits, Responses),
+        Daily = Raddress ++ "-day:" ++ erlang:integer_to_list(Day),
+        redis_store_scores_alltime(Server, Daily, Player, Score, Hits, Responses)
+    end,
     NewMax = if
       Score > Max -> Score;
       true -> Max
     end,
     [{NewMax, Total + Score}]
   end,
-%  Return = case mnesia:is_transaction() of
-%    true ->
-%      mnesia:foldl(Iterator, [{0, 0}], scoresstate);
-%    false ->
-%      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, [{0, 0}],Tab) end,
-%      mnesia:activity(transaction,Exec,[{Iterator,scoresstate}],mnesia_frag)
-%  end,
+
   case fold_table(scoresstate, Iterator, [{0, 0}]) of
     [{WinnerScore, TotalScore}] ->
       ?WARNING_MSG("triviajabber_games: ~p, ~p, ~p, ~p", [Slug, MaxPlayers, WinnerScore, TotalScore]),
@@ -1168,6 +1192,26 @@ traverse_scoresstate(Server, TimeStart, Slug, MaxPlayers) ->
       ?ERROR_MSG("interate scoresstate: ~p", [Error]),
       -6
   end.
+
+%% store_game
+traverse_scoresstate2(Server, GameCounterStr) ->
+  Iterator =  fun(Rec, _) ->
+    #scoresstate{
+        player = Player,
+        score = Score,
+        hits = Hits,
+        responses = Response
+    } = Rec,
+    RedisData = {Score, Hits, Response},
+    case RedisData of
+      {0, 0, 0} ->
+        ok; %% dont have to update
+      _ ->
+        redis_store_game(Server, GameCounterStr, Player, RedisData)
+    end,
+    []
+  end,
+  fold_table(scoresstate, Iterator, []).
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
@@ -1500,4 +1544,19 @@ fold_table(TableName, Iterator, Acc) ->
       mnesia:activity(transaction,Exec,[{Iterator, TableName}],mnesia_frag)
   end.
 
+%% redis_store_scores
+redis_store_scores_alltime(Server, Alltime, Player, RedisData) ->
+  {Score, Hits, Response} = RedisData,
+  mod_triviajabber:redis_zincrby(Server, Alltime, Score, Player),
+  AlltimeNick = Alltime ++ ":" ++ Player,
+  mod_triviajabber:redis_hincrby(Server, AlltimeNick, "hits", Hits),
+  mod_triviajabber:redis_hincrby(Server, AlltimeNick, "responses", Responses),
+  mod_triviajabber:redis_hincrby(Server, AlltimeNick, "gplayed", 1),
+  ok.
 
+redis_store_game(Server, GameCounterStr, Player, RedisData) ->
+  {Score, Hits, Response} = RedisData,
+  mod_triviajabber:redis_zadd(Server, GameCounterStr, Score, Player),
+  GameCounterNick = GameCounterStr ++ ":" ++ Player,
+  mod_triviajabber:redis_hmset(Server, GameCounterNick, Hits, Responses),
+  ok.

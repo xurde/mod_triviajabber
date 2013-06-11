@@ -933,3 +933,27 @@ redis_hincrby(Server, Key, Field, Increment) ->
       ?ERROR_MSG("redis server: ~p", [Any]),
       unknown
   end.
+
+redis_zadd(Server, Key, Score, Member) ->
+  case redis_client(Server) of
+    {ok, Client} ->
+      eredis:q(Client, ["ZADD", Key, Score, Member]);
+    {error, Error} ->
+      ?ERROR_MSG("Cant connect to redis server: ~p", [Error]),
+      error;
+    Any ->
+      ?ERROR_MSG("redis server: ~p", [Any]),
+      unknown
+  end.
+
+redis_hmset(Server, Key, Hits, Responses) ->
+  case redis_client(Server) of
+    {ok, Client} ->
+      eredis:q(Client, ["HMSET", Key, "hits", Hits, "responses", Responses]),
+    {error, Error} ->
+      ?ERROR_MSG("Cant connect to redis server: ~p", [Error]),
+      error;
+    Any ->
+      ?ERROR_MSG("redis server: ~p", [Any]),
+      unknown
+  end.
