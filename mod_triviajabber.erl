@@ -25,7 +25,8 @@
 %% helpers
 -export([iq_disco_items/3, get_room_occupants/2, start_link/2,
          games_table/7,
-         redis_zincrby/4, redis_hincrby/4]).
+         redis_zincrby/4, redis_hincrby/4,
+         redis_zadd/4, redis_hmset/4]).
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
@@ -949,7 +950,7 @@ redis_zadd(Server, Key, Score, Member) ->
 redis_hmset(Server, Key, Hits, Responses) ->
   case redis_client(Server) of
     {ok, Client} ->
-      eredis:q(Client, ["HMSET", Key, "hits", Hits, "responses", Responses]),
+      eredis:q(Client, ["HMSET", Key, "hits", Hits, "responses", Responses]);
     {error, Error} ->
       ?ERROR_MSG("Cant connect to redis server: ~p", [Error]),
       error;

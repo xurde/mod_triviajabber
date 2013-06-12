@@ -1156,25 +1156,25 @@ traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers) ->
         player = Player,
         score = Score,
         hits = Hits,
-        responses = Response
+        responses = Responses
     } = Rec,
     %% redis store_scores
-    ?WARNING_MSG("store_scores ~p: ~p, ~p, ~p", [Player, Score, Hits, Response]),
+    ?WARNING_MSG("store_scores ~p: ~p, ~p, ~p", [Player, Score, Hits, Responses]),
     RedisData = {Score, Hits, Responses},
     case RedisData of
       {0, 0, 0} ->
         ok; %% dont have to update
       _ ->
         Alltime = Raddress ++ "-alltime",
-        redis_store_scores_alltime(Server, Alltime, Player, Score, Hits, Responses),
+        redis_store_scores_alltime(Server, Alltime, Player, RedisData),
         Yearly = Raddress ++ "-year:" ++ erlang:integer_to_list(Year),
-        redis_store_scores_alltime(Server, Yearly, Player, Score, Hits, Responses),
+        redis_store_scores_alltime(Server, Yearly, Player, RedisData),
         Monthly = Raddress ++ "-month:" ++ erlang:integer_to_list(Month),
-        redis_store_scores_alltime(Server, Monthly, Player, Score, Hits, Responses),
+        redis_store_scores_alltime(Server, Monthly, Player, RedisData),
         Weekly = Raddress ++ "-week:" ++ erlang:integer_to_list(Week),
-        redis_store_scores_alltime(Server, Weekly, Player, Score, Hits, Responses),
+        redis_store_scores_alltime(Server, Weekly, Player, RedisData),
         Daily = Raddress ++ "-day:" ++ erlang:integer_to_list(Day),
-        redis_store_scores_alltime(Server, Daily, Player, Score, Hits, Responses)
+        redis_store_scores_alltime(Server, Daily, Player, RedisData)
     end,
     NewMax = if
       Score > Max -> Score;
@@ -1200,9 +1200,9 @@ traverse_scoresstate2(Server, GameCounterStr) ->
         player = Player,
         score = Score,
         hits = Hits,
-        responses = Response
+        responses = Responses
     } = Rec,
-    RedisData = {Score, Hits, Response},
+    RedisData = {Score, Hits, Responses},
     case RedisData of
       {0, 0, 0} ->
         ok; %% dont have to update
@@ -1546,7 +1546,7 @@ fold_table(TableName, Iterator, Acc) ->
 
 %% redis_store_scores
 redis_store_scores_alltime(Server, Alltime, Player, RedisData) ->
-  {Score, Hits, Response} = RedisData,
+  {Score, Hits, Responses} = RedisData,
   mod_triviajabber:redis_zincrby(Server, Alltime, Score, Player),
   AlltimeNick = Alltime ++ ":" ++ Player,
   mod_triviajabber:redis_hincrby(Server, AlltimeNick, "hits", Hits),
@@ -1555,7 +1555,7 @@ redis_store_scores_alltime(Server, Alltime, Player, RedisData) ->
   ok.
 
 redis_store_game(Server, GameCounterStr, Player, RedisData) ->
-  {Score, Hits, Response} = RedisData,
+  {Score, Hits, Responses} = RedisData,
   mod_triviajabber:redis_zadd(Server, GameCounterStr, Score, Player),
   GameCounterNick = GameCounterStr ++ ":" ++ Player,
   mod_triviajabber:redis_hmset(Server, GameCounterNick, Hits, Responses),
