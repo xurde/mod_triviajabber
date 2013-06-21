@@ -1238,13 +1238,13 @@ question_ids(Server, PoolId, Questions) ->
   if
     Questions > 0 ->
       try ejabberd_odbc:sql_query(Server,
-          ["select question_id from triviajabber_questions "
+          ["select id from triviajabber_questions "
            "where pool_id='", PoolId, "' order by rand() "
            "limit ", Questions]) of
-        {selected, ["question_id"], []} ->
+        {selected, ["id"], []} ->
           ?ERROR_MSG("pool_id ~p has no question", [PoolId]),
           [];
-        {selected, ["question_id"], QuestionsList}
+        {selected, ["id"], QuestionsList}
             when erlang:is_list(QuestionsList) ->
           QuestionsList;
         Error ->
@@ -1265,7 +1265,7 @@ question_ids(Server, PoolId, Questions) ->
 get_question_info(Server, QuestionId) ->
   try ejabberd_odbc:sql_query(Server,
       ["select question, answer, option1, option2, option3 "
-       "from triviajabber_questions where question_id='", QuestionId, "'"]) of
+       "from triviajabber_questions where id='", QuestionId, "'"]) of
     {selected, ["question", "answer", "option1", "option2", "option3"],
         []} ->
       ?ERROR_MSG("Query question info: Empty", []),
@@ -1287,7 +1287,7 @@ get_question_info(Server, QuestionId) ->
 get_question_fifty(Server, QuestionId) ->
   try ejabberd_odbc:sql_query(Server,
       ["select question, answer, option1, option2, option3 "
-       "from triviajabber_questions where question_id='", QuestionId, "'"]) of
+       "from triviajabber_questions where id='", QuestionId, "'"]) of
     {selected, ["question", "answer", "option1", "option2", "option3"],
         []} ->
       ?ERROR_MSG("Query question info: Empty", []),

@@ -122,6 +122,8 @@ init([Host, Opts]) ->
   Rollback = proplists:get_value(rollback, Opts, 1),
   ?WARNING_MSG("Service name ~p, Host ~p, Min ~p", [ServiceName, Host, MinPlayers]),
   Route = gen_mod:get_opt_host(Host, Opts, ServiceName ++ "@HOST@"),
+%%  Route = "dev-guest.triviapad.com",
+  ?WARNING_MSG("Route ~p", [Route]),
   ejabberd_hooks:add(sm_remove_connection_hook, Host,
                                ?MODULE, user_offline, 100),
   ejabberd_hooks:add(unset_presence_hook, Host,
@@ -429,8 +431,8 @@ game_disco_items(Server, GameService) ->
         when erlang:is_list(GameList) ->
       {Trial, Regular, Official} = filter_games(GameList, {[], [], []}),
       OfficGames = add_games(GameService, "Official", Official, []),
-      RegulGames = add_games(GameService, "Regular", Regular, OfficGames),
-      TrialGames = add_games(GameService, "Trial", Trial, RegulGames),
+      RegulGames = add_games(GameService, "Unofficial", Regular, OfficGames),
+      TrialGames = add_games(GameService, "Testing", Trial, RegulGames),
       TrialGames;
     Reason ->
       ?ERROR_MSG("failed to query triviajabber_rooms ~p", [Reason]),
@@ -638,13 +640,13 @@ filter_games([], {T, R, O}) ->
 filter_games([Head|Tail], {T, R, O}) ->
   {Name, Level, Questions, Slug, Topic} = Head,
   case Level of
-    "T" ->
+    "Testing" ->
       filter_games(Tail,
           {[{Name, Questions, Slug, Topic}|T], R, O});
-    "R" ->
+    "Unofficial" ->
       filter_games(Tail,
           {T, [{Name, Questions, Slug, Topic}|R], O});
-    "O" ->
+    "Official" ->
       filter_games(Tail,
           {T, R, [{Name, Questions, Slug, Topic}|O]})
   end.
@@ -822,8 +824,9 @@ utc_sql_datetime(Date, Time) ->
 games_table(Server, Date, Time, Slug,
     MaxPlayers, WinnerScore, TotalScore) ->
   try get_games_counter(Server, Slug) of
-    {selected,["room_id", "games_counter"],[{RoomIdStr, CounterStr}]} ->
-      Counter = erlang:list_to_integer(CounterStr),
+    {selected,["id", "games_counter"],[{RoomIdStr, CounterStr}]} ->
+      ?WARNING_MSG("id ~p, games_counter ~p", [RoomIdStr, CounterStr]),
+      Counter = try erlang:list_to_integer(CounterStr),
       IncCounter = Counter + 1,
       ?WARNING_MSG("room_id(~p), games_counter(~p), inc = ~p", [RoomIdStr, CounterStr, IncCounter]),
       set_games_counter(Server, Slug, IncCounter),
@@ -839,7 +842,7 @@ games_table(Server, Date, Time, Slug,
           ?ERROR_MSG("Exception1 ~p, ~p", [Res1, Desc1]),
           -2
       end;
-    {selected,["room_id", "games_counter"], List} ->
+    {selected,["id", "games_counter"], List} ->
       ?ERROR_MSG("[room_id, games_counter] returns list: ~p", [List]),
       -3;
     Reason ->
@@ -854,7 +857,7 @@ games_table(Server, Date, Time, Slug,
 %% get games_counter
 get_games_counter(Server, Slug) ->
   ejabberd_odbc:sql_query(Server,
-      ["select room_id, games_counter from triviajabber_rooms "
+      ["select id, games_counter from triviajabber_rooms "
           "where slug='", Slug, "'"]
   ).
 
