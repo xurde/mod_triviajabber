@@ -707,10 +707,13 @@ check_player_in_game(Server, MinPlayers, GameId,
   ?WARNING_MSG("check_player_in_game ~p ~p", [Player, GameId]),
   case player_store:match_object({GameId, Player, '_', '_', '_', '_'}) of
     [] ->
-      ?WARNING_MSG("insert new player ~p into ~p", [Player, GameId]),
+      Delay1 = gen_mod:get_module_opt(Server, ?MODULE, delay1, 5000),
+      Delay2 = gen_mod:get_module_opt(Server, ?MODULE, delay2, 5000),
+      Delayb = gen_mod:get_module_opt(Server, ?MODULE, delaybetween, 5000),
+      ?WARNING_MSG("insert new player ~p into ~p (delay ~p)", [Player, GameId, DelayNext]),
       triviajabber_game:take_new_player(Server, GameId, GamePool,
-          Player, Resource,
-          GameQuestions, GameSeconds, MinPlayers),
+          Player, Resource, GameQuestions, GameSeconds,
+          MinPlayers, {Delay1, Delay2, Delayb}),
       "ok";
     Res ->
       ?WARNING_MSG("find ~p, but see unexpected ~p", [Player, Res]),

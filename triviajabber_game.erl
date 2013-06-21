@@ -17,7 +17,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 %% helpers
--export([take_new_player/8, remove_old_player/1,
+-export([take_new_player/9, remove_old_player/1,
          current_question/1, get_answer/5,
          current_status/1, get_question_fifty/2,
          lifeline_fifty/3,
@@ -56,7 +56,8 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
     slug = Slug, pool_id = PoolId,
     questions = Questions, seconds = Seconds,
     final_players = Final, started = Started,
-    maxplayers = MaxPlayers, minplayers = MinPlayers}) ->
+    maxplayers = MaxPlayers, minplayers = MinPlayers,
+    delay1 = D1, delay2 = D2, delaybetween = D3}) ->
   ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p, final ~p",
       [self(), Slug, MinPlayers, Final+1]),
   mnesia:dirty_write(#scoresstate{
@@ -88,6 +89,7 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
            questions = Questions, seconds = Seconds,
            pool_id = PoolId, final_players = Final+1,
            started = NewStarted,
+           delay1 = D1, delay2 = D2, delaybetween = D3,
            maxplayers = NewMax, minplayers = MinPlayers},
        {noreply, NewState1};
     Yes ->  
@@ -96,6 +98,7 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
           questions = Questions, seconds = Seconds,
           pool_id = PoolId, final_players = Final+1,
           started = Yes,
+          delay1 = D1, delay2 = D2, delaybetween = D3,
           maxplayers = NewMax, minplayers = MinPlayers},
       {noreply, NewState3}
   end;
@@ -106,19 +109,22 @@ handle_cast({left, Slug}, #gamestate{
     slug = Slug, pool_id = PoolId,
     questions = Questions, seconds = Seconds,
     final_players = Final, started = Started,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
     maxplayers = MaxPlayers, minplayers = MinPlayers}) ->
   ?WARNING_MSG("~p child knows [outcoming] <- ~p", [self(), Slug]),
   NewState =  #gamestate{host = Host,
       slug = Slug, pool_id = PoolId, time_start = TimeStart,
       questions = Questions, seconds = Seconds,
       final_players = Final-1, started = Started,
+      delay1 = D1, delay2 = D2, delaybetween = D3,
       maxplayers = MaxPlayers, minplayers = MinPlayers},
   {noreply, NewState};
 handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     host = _Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = StrSeconds,
     pool_id = _PoolId, final_players = _Final,
-    started = _Started, maxplayers = _MaxPlayers, 
+    started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   case onetime_answer(Slug, Player) of
     {atomic, true} ->
@@ -185,6 +191,7 @@ handle_cast({rollback, Player}, #gamestate{
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   %% remove from queue
   onetime_delelement(Slug, Player),
@@ -200,6 +207,7 @@ handle_call(gamestatus, _From, #gamestate{
     questions = Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = Final,
     started = _Started, maxplayers = _MaxPlayers, 
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   case triviajabber_question:lookup(self()) of
     {ok, _, Q, _, _, _, _QPhrase, _, _, _, _} ->
@@ -215,6 +223,7 @@ handle_call(fifty, _From, #gamestate{
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   Reply = case triviajabber_question:lookup(self()) of
     {ok, _Pid, Question, AnswerId, _QuestionId, _Time, QPhrase,
@@ -237,6 +246,7 @@ handle_call(clair, _From, #gamestate{
     questions = _Questions, seconds = _StrSeconds,
     pool_id = _PoolId, final_players = _Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   Reply = case triviajabber_question:lookup(self()) of
     {ok, _, Question, _AnswerId, _QuesId, _Time, _QPhrase,
@@ -272,6 +282,7 @@ handle_info({specialone, Player, Resource}, #gamestate{
     questions = _Questions, seconds = StrSeconds,
     pool_id = _PoolId, final_players = _Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   CountdownPacket = {xmlelement, "message",
      [{"type", "chat"}, {"id", randoms:get_string()}],
@@ -299,6 +310,7 @@ handle_info(countdown, #gamestate{
     questions = Questions, seconds = StrSeconds,
     pool_id = PoolId, final_players = Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
     minplayers = _MinPlayers} = State) ->
   QuestionIds = question_ids(Host, PoolId, Questions),
   ?WARNING_MSG("from ~p (~p), list ~p", [Slug, Questions, QuestionIds]),
@@ -311,13 +323,13 @@ handle_info(countdown, #gamestate{
       send_status(Host, Slug, Final, Questions, 1),
       send_question(Host, Final, Questions,
           Slug, UniqueQuestion, StrSeconds, 1),
-      next_question(StrSeconds, [], 1),
+      next_question(StrSeconds, [], 1), %% TODO: add delay
       {noreply, State};
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, 1),
       send_question(Host, Final, Questions,
           Slug, Head, StrSeconds, 1),
-      next_question(StrSeconds, Tail, 2),
+      next_question(StrSeconds, Tail, 2), %% TODO: add delay
       {noreply, State}
   end;
 handle_info({questionslist, QuestionIds, Step}, #gamestate{
@@ -335,12 +347,12 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       send_status(Host, Slug, Final, Questions, Step),
       send_question(Host, Final, Questions,
           Slug, LastQuestion, StrSeconds, Step),
-      next_question(StrSeconds, [], Step + 1),
+      next_question(StrSeconds, [], Step + 1), %% TODO: add delay
       {noreply, State};
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, Step),
       send_question(Host, Final, Questions,
-          Slug, Head, StrSeconds, Step),
+          Slug, Head, StrSeconds, Step), %% TODOL add delay
       next_question(StrSeconds, Tail, Step + 1),
       {noreply, State}
   end;
@@ -446,6 +458,9 @@ init([Host, Opts]) ->
   Questions = gen_mod:get_opt(questions, Opts, 0),
   Seconds = gen_mod:get_opt(seconds, Opts, -1),
   FirstPlayer = gen_mod:get_opt(player, Opts, ""),
+  Delay1 = gen_mod:get_opt(delay1, Opts, 5000),
+  Delay2 = gen_mod:get_opt(delay2, Opts, 5000),
+  Delayb = gen_mod:get_opt(delaybetween, Opts, 5000),
   ?WARNING_MSG("@@@ child ~p processes {~p, ~p, ~p, ~p}",
       [self(), Slug, PoolId, Questions, Seconds]),
   mnesia:dirty_write(#scoresstate{
@@ -471,7 +486,8 @@ init([Host, Opts]) ->
       slug = Slug, pool_id = PoolId,
       questions = Questions, seconds = Seconds,
       final_players = 1, minplayers = MinPlayers,
-      maxplayers = 1,
+      maxplayers = 1, delay1 = Delay1,
+      delay2 = Delay2, delaybetween = Delayb,
       started = Started}
   }.
 
@@ -483,17 +499,19 @@ init([Host, Opts]) ->
 %% New player has joined game room (slug)
 %% If there's no process handle this game, create new one.
 take_new_player(Host, Slug, PoolId, Player, Resource,
-    Questions, Seconds, MinPlayers) ->
+    Questions, Seconds, MinPlayers, DelayComplex) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, PoolId, Pid} ->
       ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
       gen_server:cast(Pid, {joined, Slug, PoolId, Player}),
       ok;
     {null, not_found} ->
+      {Delay1, Delay2, Delayb} = DelayComplex,
       Opts = [{slug, Slug}, {pool_id, PoolId},
               {questions, Questions}, {seconds, Seconds},
               {player, Player}, {resource, Resource},
-              {minplayers, MinPlayers}],
+              {minplayers, MinPlayers}, {delay1, Delay1},
+              {delay2, Delay2}, {delaybetween, Delayb}],
       {ok, Pid} = start_link(Host, Opts),
       ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, PoolId, Pid),
@@ -760,6 +778,7 @@ send_status(Server, Slug, Final, Questions, Step) ->
   end, List).
 
 %% send first question
+%% TODO ? add delay ?
 send_question(Server, _, _, Slug,
     QuestionId, Seconds, 1) ->
   case get_question_info(Server, QuestionId) of
@@ -796,6 +815,7 @@ send_question(Server, _, _, Slug,
       error
   end;
 %% send question to all player in slug
+%% TODO add 2 delays
 send_question(Server, Final, Questions, Slug,
     QuestionId, _Seconds, Step) ->
   case get_question_info(Server, QuestionId) of
