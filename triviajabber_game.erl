@@ -38,8 +38,9 @@
 -define(COUNTDOWNSTR, "Game is about to start. Please wait for other players to join.").
 
 -record(gamestate, {host, slug, pool_id, time_start,
-    questions, seconds, final_players, maxplayers,
-    minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
+    questions, seconds, final_players,
+    delay1, delay2, delaybetween,
+    maxplayers, minplayers = ?DEFAULT_MINPLAYERS, started = ?READY}).
 -record(answer1state, {slug, rightqueue}).
 -record(answer0state, {slug, wrongqueue}).
 %% how players have answer current question
@@ -321,15 +322,17 @@ handle_info(countdown, #gamestate{
       {stop, normal, State};
     [{UniqueQuestion}] ->
       send_status(Host, Slug, Final, Questions, 1),
-      send_question(Host, Final, Questions,
+      Delays0 = {D1, D2, D3},
+      send_question(Host, Delays0, Final, Questions,
           Slug, UniqueQuestion, StrSeconds, 1),
-      next_question(StrSeconds, [], 1), %% TODO: add delay
+      next_question(D1+D2+D3, StrSeconds, [], 1), %% TODO: add delay
       {noreply, State};
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, 1),
-      send_question(Host, Final, Questions,
+      Delays1 = {D1, D2, D3},
+      send_question(Host, Delays1, Final, Questions,
           Slug, Head, StrSeconds, 1),
-      next_question(StrSeconds, Tail, 2), %% TODO: add delay
+      next_question(D1+D2+D3, StrSeconds, Tail, 2), %% TODO: add delay
       {noreply, State}
   end;
 handle_info({questionslist, QuestionIds, Step}, #gamestate{
@@ -337,6 +340,7 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
     pool_id = PoolId, questions = Questions,
     seconds = StrSeconds, final_players = Final,
     started = _Started, maxplayers = MaxPlayers,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
     minplayers = _MinPlayers} = State) ->
   case QuestionIds of
     [] ->
@@ -345,15 +349,17 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
       {stop, normal, State};
     [{LastQuestion}] ->
       send_status(Host, Slug, Final, Questions, Step),
-      send_question(Host, Final, Questions,
+      Delays0 = {D1, D2, D3},
+      send_question(Host, Delays0, Final, Questions,
           Slug, LastQuestion, StrSeconds, Step),
-      next_question(StrSeconds, [], Step + 1), %% TODO: add delay
+      next_question(D1+D2+D3, StrSeconds, [], Step + 1), %% TODO: add delay
       {noreply, State};
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, Step),
-      send_question(Host, Final, Questions,
+      Delays1 = {D1, D2, D3},
+      send_question(Host, Delays1, Final, Questions,
           Slug, Head, StrSeconds, Step), %% TODOL add delay
-      next_question(StrSeconds, Tail, Step + 1),
+      next_question(D1+D2+D3, StrSeconds, Tail, Step + 1),
       {noreply, State}
   end;
 handle_info({rankinggame, List, RankingGame}, #gamestate{
@@ -361,14 +367,25 @@ handle_info({rankinggame, List, RankingGame}, #gamestate{
     pool_id = _PoolId, questions = _Questions,
     seconds = _StrSeconds, final_players = _Final,
     started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   ?WARNING_MSG("ranking-game ...", []),
   broadcast_msg(Host, Slug, List, RankingGame),
+  {noreply, State};
+handle_info({rankingquestion, List, RankingQuestion}, #gamestate{
+    host = Host, slug = Slug, time_start = _TimeStart,
+    pool_id = _PoolId, questions = _Questions,
+    seconds = _StrSeconds, final_players = _Final,
+    started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
+    minplayers = _MinPlayers} = State) ->
+  broadcast_msg(Host, Slug, List, RankingQuestion),
   {noreply, State};
 handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
     host = Host, slug = Slug, time_start = _TimeStart,
     pool_id = _PoolId, questions = _Questions,
     seconds = StrSeconds, final_players = _Final,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     started = _Started, maxplayers = _MaxPlayers,
     minplayers = _MinPlayers} = State) ->
   MsgId = Slug ++ randoms:get_string(),
@@ -399,6 +416,7 @@ handle_info(killafter, #gamestate{
     host = Host, slug = Slug, time_start = TimeStart,
     pool_id = PoolId, questions = Questions,
     seconds = _StrSeconds, final_players = Final,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     started = Started, maxplayers = MaxPlayers,
     minplayers = _MinPlayers} = State) ->
   if
@@ -779,7 +797,7 @@ send_status(Server, Slug, Final, Questions, Step) ->
 
 %% send first question
 %% TODO ? add delay ?
-send_question(Server, _, _, Slug,
+send_question(Server, _Delays, _, _, Slug,
     QuestionId, Seconds, 1) ->
   case get_question_info(Server, QuestionId) of
     {ok, Qst, Asw, QLst} ->
@@ -816,7 +834,7 @@ send_question(Server, _, _, Slug,
   end;
 %% send question to all player in slug
 %% TODO add 2 delays
-send_question(Server, Final, Questions, Slug,
+send_question(Server, Delays, Final, Questions, Slug,
     QuestionId, _Seconds, Step) ->
   case get_question_info(Server, QuestionId) of
     {ok, Qst, Asw, QLst} ->
@@ -836,8 +854,10 @@ send_question(Server, Final, Questions, Slug,
       },
       
       List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
-      %% then broadcast result previous question
-      broadcast_msg(Server, Slug, List, RankingQuestion),
+      {Delay1, Delay2, Delayb} = Delays,
+      %% delay to return rankingquestion
+      erlang:send_after(Delay1, self(),
+          {rankingquestion, List, RankingQuestion}),
       
       RGame = update_scoreboard(List, []),
       SortScoreboard = scoreboard_items(RGame, []),
@@ -854,10 +874,10 @@ send_question(Server, Final, Questions, Slug,
         ]
       },
       %% delay to return rankinggame
-      erlang:send_after(?DELAYNEXT1, self(),
+      erlang:send_after(Delay1+Delay2, self(),
           {rankinggame, List, RankingGame}),
       %% delay to broadcast next question
-      erlang:send_after(?DELAYNEXT2, self(),
+      erlang:send_after(Delay1+Delay2+Delayb, self(),
           {nextquestion, QLst, Qst, Step, Asw});
     _ ->
       error
@@ -1092,10 +1112,10 @@ result_previous_question(Slug, Final) ->
   PlayersTag.
 
 %% next question will be sent in seconds
-next_question(StrSeconds, Tail, Step) ->
+next_question(Delays, StrSeconds, Tail, Step) ->
   case string:to_integer(StrSeconds) of
     {Seconds, []} ->
-      erlang:send_after(Seconds * 1000 + ?DELAYNEXT1, self(),
+      erlang:send_after(Seconds * 1000 + Delays, self(),
           {questionslist, Tail, Step});
     {RetSeconds, Reason} ->
       ?ERROR_MSG("Error to convert seconds to integer {~p, ~p}",
