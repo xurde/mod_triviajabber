@@ -286,7 +286,7 @@ handle_info({specialone, Player, Resource}, #gamestate{
     delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     minplayers = _MinPlayers} = State) ->
   CountdownPacket = {xmlelement, "message",
-     [{"type", "chat"}, {"id", randoms:get_string()}],
+     [{"type", "status"}, {"id", randoms:get_string()}],
      [{xmlelement, "countdown",
          [{"secs", StrSeconds}],
          [{xmlcdata, ?COUNTDOWNSTR}]}]
