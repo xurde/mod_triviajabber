@@ -681,8 +681,8 @@ game_items(Items, GameService) ->
         };
       {failed, null} ->
         {xmlelement, "game",
-          [{"name", Name}, {"jid", Jid},
-           {"topic", Topic}, {"question", "-1"},
+          [{"name", Name}, {"slug", Slug},
+           {"topic", Topic}, {"question", "0"},
            {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
           []
@@ -691,9 +691,9 @@ game_items(Items, GameService) ->
         ?WARNING_MSG("failed to get current question (~p slug): ~p",
             [Slug, Ret]),
         {xmlelement, "game",
-          [{"name", Name}, {"jid", Jid}, 
-           {"topic", Topic}, {"question", "-1"}, 
-           {"questions", Questions}, 
+          [{"name", Name}, {"slug", Slug}, 
+           {"topic", Topic}, {"question", "0"}, 
+           {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
           []
         }
