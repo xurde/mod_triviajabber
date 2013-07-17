@@ -68,6 +68,8 @@ start(Host, Opts) ->
   player_store:init(),
   triviajabber_store:init(),
   triviajabber_question:init(),
+  triviajabber_statistic:init(),
+  triviajabber_scores:init(),
   Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
   ChildSpec =
     {Proc,
@@ -79,6 +81,8 @@ start(Host, Opts) ->
   supervisor:start_child(ejabberd_sup, ChildSpec).
 
 stop(Host) ->
+  triviajabber_scores:close(),
+  triviajabber_statistic:close(),
   triviajabber_question:close(),
   triviajabber_store:close(),
   player_store:close(),
