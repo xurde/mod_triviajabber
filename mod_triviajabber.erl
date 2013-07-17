@@ -417,11 +417,11 @@ game_disco_items(Server, GameService) ->
 %%  [{xmlelement, "games",
 %%    [{"group", "hardcode"}],
 %%    [{xmlelement, "game",
-%%      [{"name", "name1"}, {"jid", "anonymous1@dev.triviapad.com"}, {"topic", "test topic"}, {"question", "100"}, {"questions", "25"}, {"players", "108"}],
+%%      [{"name", "name1"}, {"slug", "name1"}, {"topic", "test topic"}, {"question", "100"}, {"questions", "25"}, {"players", "108"}],
 %%      []
 %%     },
 %%     {xmlelement, "game",
-%%      [{"name", "name2"}, {"jid", "anonymous1@dev.triviapad.com"}, {"topic", "test topic 2"}, {"question", "120"}, {"questions", "60"}, {"players", "10"}],
+%%      [{"name", "name2"}, {"slug", "name2"}, {"topic", "test topic 2"}, {"question", "120"}, {"questions", "60"}, {"players", "10"}],
 %%      []
 %%     }
 %%    ]
@@ -677,7 +677,7 @@ game_items(Items, GameService) ->
     case triviajabber_game:current_question(Slug) of
       {ok, QuestionId} ->
         {xmlelement, "game",
-          [{"name", Name}, {"jid", Jid},
+          [{"name", Name}, {"slug", Slug},
            {"topic", Topic}, {"question", erlang:integer_to_list(QuestionId)},
            {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
@@ -685,8 +685,8 @@ game_items(Items, GameService) ->
         };
       {failed, null} ->
         {xmlelement, "game",
-          [{"name", Name}, {"jid", Jid},
-           {"topic", Topic}, {"question", "-1"},
+          [{"name", Name}, {"slug", Slug},
+           {"topic", Topic}, {"question", "0"},
            {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
           []
@@ -695,9 +695,9 @@ game_items(Items, GameService) ->
         ?WARNING_MSG("failed to get current question (~p slug): ~p",
             [Slug, Ret]),
         {xmlelement, "game",
-          [{"name", Name}, {"jid", Jid}, 
-           {"topic", Topic}, {"question", "-1"}, 
-           {"questions", Questions}, 
+          [{"name", Name}, {"slug", Slug}, 
+           {"topic", Topic}, {"question", "0"}, 
+           {"questions", Questions},
            {"players", erlang:integer_to_list(PlayersCount)}],
           []
         }
