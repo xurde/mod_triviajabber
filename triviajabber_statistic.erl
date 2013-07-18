@@ -2,7 +2,7 @@
 -author('od06@htklabs.com').
 
 -export([init/0, close/0, delete/1,
-    insert/5]).
+    lookup/1, insert/5]).
 
 init() ->
   ets:new(?MODULE, [public, named_table]).

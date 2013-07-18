@@ -56,11 +56,7 @@ handle_cast({joined, Slug, PoolId, NewComer}, #gamestate{
     delay1 = D1, delay2 = D2, delaybetween = D3}) ->
   ?WARNING_MSG("~p child knows [incoming] -> ~p, min ~p, final ~p",
       [self(), Slug, MinPlayers, Final+1]),
-  mnesia:dirty_write(#scoresstate{
-      player = NewComer,
-      score = 0, hits = 0,
-      responses = 0
-  }),
+  triviajabber_scores:insert(Slug, NewComer, 0, 0, 0),
   NewMax = if
     Final + 1 > MaxPlayers -> (Final + 1);
     true -> MaxPlayers
@@ -134,61 +130,71 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     answerrightqueue = RightQueue,
     answerwrongqueue = WrongQueue,
     minplayers = MinPlayers} = State) ->
-  case onetime_answer(Slug, Player) of
+  case onetime_answer(PlayersState, Player) of
     {atomic, true} ->
 % using questionstate
       case triviajabber_question:match_object(
           {self(), '_', '_', QuestionId, '_', '_', '_', '_', '_', '_'}) of
         [{_Pid, _Question, Answer, QuestionId, Stamp1, _, _, _, _, _}] ->
-          NewRightQueue = case reasonable_hittime(Stamp1, ClientTime, StrSeconds) of
-            "toolate" ->
-              ?ERROR_MSG("late to give right answer", []);
-            "error" ->
-              ?ERROR_MSG("reasonable_hittime1 ERROR", []);
-            {HitTimeY, reset} ->
-              ?WARNING_MSG("(RR) right answer. hittime ~p",
-                  [HitTimeY]),
-              onetime_delelement(Slug, Player),
-              %% push into true queue
-              statistic_answer(Slug, Answer)
-              push_right_answer(RightQueue, Player, HitTimeY);
-            {HitTimeX, no} ->
-              ?WARNING_MSG("(RN) right answer. hittime ~p",
-                  [HitTimeX]),
-              %% push into true queue
-              statistic_answer(Slug, Answer),
-              push_right_answer(RightQueue, Player, HitTimeX)
-          end,
+          {NewRightQueue, NewPlayersState1} =
+            case reasonable_hittime(Stamp1, ClientTime, StrSeconds) of
+              "toolate" ->
+                ?ERROR_MSG("late to give right answer", []),
+                {RightQueue, PlayersState};
+              "error" ->
+                ?ERROR_MSG("reasonable_hittime1 ERROR", []),
+                {RightQueue, PlayersState};
+              {HitTimeY, reset} ->
+                ?WARNING_MSG("(RR) right answer. hittime ~p",
+                    [HitTimeY]),
+                PlayersState1 = sets:del_element(Player, PlayersState),
+                %% push into true queue
+                NewRight1 = push_right_answer(RightQueue, Player, HitTimeY),
+                statistic_answer(Slug, Answer),
+                {NewRight1, PlayersState1};
+              {HitTimeX, no} ->
+                ?WARNING_MSG("(RN) right answer. hittime ~p",
+                    [HitTimeX]),
+                %% push into true queue
+                NewRight2 = push_right_answer(RightQueue, Player, HitTimeX),
+                statistic_answer(Slug, Answer),
+                {NewRight2, PlayersState}
+            end,
           State1 = #gamestate{
               host = Host, slug = Slug, time_start = TimeStart,
               questions = Questions, seconds = StrSeconds,
               pool_id = PoolId, final_players = Final,
               started = Started, maxplayers = MaxPlayers,
               delay1 = D1, delay2 = D2, delaybetween = D3,
-              playersset = PlayersState,
+              playersset = NewPlayersState1,
               answerrightqueue = NewRightQueue,
               answerwrongqueue = WrongQueue,
               minplayers = MinPlayers},
           {noreply, State1};
         [{_Pid, _Question, A1, QuestionId, Stamp0, _, _, _, _, _}] ->
-          NewWrongQueue = case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
-            "toolate" ->
-              ?ERROR_MSG("late to give right answer", []);
-            "error" ->
-              ?ERROR_MSG("reasonable_hittime2 ERROR", []);
-            {HitTime0X, reset} ->
-              ?WARNING_MSG("(WR) wrong answer. Correct: ~p. hittime ~p",
-                  [A1, HitTime0X]),
-              onetime_delelement(Slug, Player),
-              %% push into wrong queue
-              statistic_answer(Slug, Answer),
-              push_wrong_answer(WrongQueue, Player, HitTime0X);
-            {HitTime0Y, no} ->
+          {NewWrongQueue, NewPlayersState2} =
+            case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
+              "toolate" ->
+                ?ERROR_MSG("late to give right answer", []),
+                {RightQueue, PlayersState};
+              "error" ->
+                ?ERROR_MSG("reasonable_hittime2 ERROR", []),
+                {RightQueue, PlayersState};
+              {HitTime0X, reset} ->
+                ?WARNING_MSG("(WR) wrong answer. Correct: ~p. hittime ~p",
+                    [A1, HitTime0X]),
+                PlayersSet2 = sets:del_element(Player, PlayersState),
+                %% push into wrong queue
+                NewWrong1 = push_wrong_answer(WrongQueue, Player, HitTime0X),
+                statistic_answer(Slug, Answer),
+                {NewWrong1, PlayersSet2};
+              {HitTime0Y, no} ->
               ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
                   [A1, HitTime0Y]),
               %% push into wrong queue
+              NewWrong2 = push_wrong_answer(WrongQueue, Player, HitTime0Y),
               statistic_answer(Slug, Answer),
-              push_wrong_answer(WrongQueue, Player, HitTime0Y)
+              {NewWrong2, PlayersState}
           end,
           State2 = #gamestate{
               host = Host, slug = Slug, time_start = TimeStart,
@@ -196,15 +202,25 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               pool_id = PoolId, final_players = Final,
               started = Started, maxplayers = MaxPlayers,
               delay1 = D1, delay2 = D2, delaybetween = D3,
-              playersset = PlayersState,
+              playersset = NewPlayersState2,
               answerrightqueue = RightQueue,
               answerwrongqueue = NewWrongQueue,
               minplayers = MinPlayers},
           {noreply, State2};
         [] ->
           ?WARNING_MSG("~p has answered late, but we dont count", [Player]),
-          onetime_delelement(Slug, Player),
-          {noreply, State};
+          PlayersSet3 = sets:del_element(Player, PlayersState),
+          State3 = #gamestate{
+              host = Host, slug = Slug, time_start = TimeStart,
+              questions = Questions, seconds = StrSeconds,
+              pool_id = PoolId, final_players = Final,
+              started = Started, maxplayers = MaxPlayers,
+              delay1 = D1, delay2 = D2, delaybetween = D3,
+              playersset = PlayersSet3,
+              answerrightqueue = RightQueue,
+              answerwrongqueue = WrongQueue,
+              minplayers = MinPlayers},
+          {noreply, State3};
         Ret ->
           ?WARNING_MSG("~p answered uncorrectly: ~p",
               [Player, Ret]),
@@ -220,19 +236,29 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
       {noreply, State}
   end;
 handle_cast({rollback, Player}, #gamestate{
-    host = _Host, slug = Slug, time_start = _TimeStart,
-    questions = _Questions, seconds = _StrSeconds,
-    pool_id = _PoolId, final_players = _Final,
-    started = _Started, maxplayers = _MaxPlayers,
-    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
-    playersset = _PlayersState,
-    answerrightqueue = _RightQueue,
-    answerwrongqueue = _WrongQueue,
-    minplayers = _MinPlayers} = State) ->
+    host = Host, slug = Slug, time_start = TimeStart,
+    questions = Questions, seconds = StrSeconds,
+    pool_id = PoolId, final_players = Final,
+    started = Started, maxplayers = MaxPlayers,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
+    playersset = PlayersState,
+    answerrightqueue = RightQueue,
+    answerwrongqueue = WrongQueue,
+    minplayers = MinPlayers} = State) ->
   %% remove from queue
-  onetime_delelement(Slug, Player),
-  pop_current_answer(Slug, Player),
-  {noreply, State};
+  PlayersState1 = sets:del_element(Player, PlayersState),
+  {RightQueue1, WrongQueue1} = pop_current_answer(RightQueue, WrongQueue, Player),
+  State1 = #gamestate{
+    host = Host, slug = Slug, time_start = TimeStart,
+    questions = Questions, seconds = StrSeconds,
+    pool_id = PoolId, final_players = Final,
+    started = Started, maxplayers = MaxPlayers,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
+    playersset = PlayersState1,
+    answerrightqueue = RightQueue1,
+    answerwrongqueue = WrongQueue1,
+    minplayers = MinPlayers},
+  {noreply, State1};
 handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
@@ -297,12 +323,10 @@ handle_call(clair, _From, #gamestate{
     {ok, _, Question, _AnswerId, _QuesId, _Time, _QPhrase,
         _O1, _O2, _O3, _O4} ->
       ?WARNING_MSG("before dirty_read statistic of ~p question", [Question]),
-      case mnesia:dirty_read(statistic, Slug) of
+      case triviajabber_statistic:lookup(Slug) of
         [] ->
           {ok, Question, 0, 0, 0, 0};
-        [E] ->
-          #statistic{slug = _, opt1 = O1,
-              opt2 = O2, opt3 = O3, opt4 = O4} = E,
+        {ok, O1, O2, O3, O4} ->
           {ok, Question, O1, O2, O3, O4};
         Hell ->
           ?ERROR_MSG("statistic HELL ~p", [Hell]),
@@ -374,8 +398,7 @@ handle_info(countdown, #gamestate{
     [{UniqueQuestion}] ->
       send_status(Host, Slug, Final, Questions, 1),
       Delays0 = {D1, D2, D3},
-      Rank1 = result_previous_question(Final, RightQueue, WrongQueue),
-      triviajabber_statistic:delete(Slug),
+      Rank1 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays0, Rank1, Questions,
           Slug, UniqueQuestion, StrSeconds, 1),
       next_question(D1+D2+D3, StrSeconds, [], 1),
@@ -393,8 +416,7 @@ handle_info(countdown, #gamestate{
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, 1),
       Delays1 = {D1, D2, D3},
-      Rank2 = result_previous_question(Final, RightQueue, WrongQueue),
-      triviajabber_statistic:delete(Slug),
+      Rank2 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays1, Rank2, Questions,
           Slug, Head, StrSeconds, 1),
       next_question(D1+D2+D3, StrSeconds, Tail, 2),
@@ -419,19 +441,17 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
     playersset = PlayersState,
     answerrightqueue = RightQueue,
     answerwrongqueue = WrongQueue,
-    minplayers = _MinPlayers} = State) ->
+    minplayers = MinPlayers} = State) ->
   case QuestionIds of
     [] ->
-      Rank0 = result_previous_question(Final, RightQueue, WrongQueue),
-      triviajabber_statistic:delete(Slug),
+      Rank0 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       finish_game(Host, Slug, PoolId, Rank0, Step, Questions,
           TimeStart, MaxPlayers),
       {stop, normal, State};
     [{LastQuestion}] ->
       send_status(Host, Slug, Final, Questions, Step),
       Delays0 = {D1, D2, D3},
-      Rank1 = result_previous_question(Final, RightQueue, WrongQueue),
-      triviajabber_statistic:delete(Slug),
+      Rank1 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays0, Rank1, Questions,
           Slug, LastQuestion, StrSeconds, Step),
       next_question(D1+D2+D3, StrSeconds, [], Step + 1),
@@ -449,8 +469,7 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
     [{Head}|Tail] ->
       send_status(Host, Slug, Final, Questions, Step),
       Delays1 = {D1, D2, D3},
-      Rank2 = result_previous_question(Final, RightQueue, WrongQueue),
-      triviajabber_statistic:delete(Slug),
+      Rank2 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays1, Rank2, Questions,
           Slug, Head, StrSeconds, Step),
       next_question(D1+D2+D3, StrSeconds, Tail, Step + 1),
@@ -492,15 +511,15 @@ handle_info({rankingquestion, List, RankingQuestion}, #gamestate{
   broadcast_msg(Host, Slug, List, RankingQuestion),
   {noreply, State};
 handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
-    host = Host, slug = Slug, time_start = _TimeStart,
-    pool_id = _PoolId, questions = _Questions,
-    seconds = StrSeconds, final_players = _Final,
-    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
-    started = _Started, maxplayers = _MaxPlayers,
-    playersset = _PlayersState,
-    answerrightqueue = _RightQueue,
-    answerwrongqueue = _WrongQueue,
-    minplayers = _MinPlayers} = State) ->
+    host = Host, slug = Slug, time_start = TimeStart,
+    pool_id = PoolId, questions = Questions,
+    seconds = StrSeconds, final_players = Final,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
+    started = Started, maxplayers = MaxPlayers,
+    playersset = PlayersState,
+    answerrightqueue = RightQueue,
+    answerwrongqueue = WrongQueue,
+    minplayers = MinPlayers} = State) ->
   MsgId = Slug ++ randoms:get_string(),
   QLstLen = erlang:length(QLst),
   {OptList, RevertOpts} = generate_opt_list(QLst, [], [], QLstLen),
@@ -515,7 +534,7 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
       ]
   },
   %% reset playersstate.playersets for new question
-  mnesia:clear_table(playersstate),
+  PlayersState1 = sets:new(),
   CurrentTime = get_timestamp(),
   SecretId = find_answer(OptList, Asw),
   ?WARNING_MSG("nextquestion ~p ... secret(~p) = ~p", [Step, Asw, SecretId]),
@@ -524,7 +543,17 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
       Opt1, Opt2, Opt3, Opt4),
   List = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
   broadcast_msg(Host, Slug, List, QuestionPacket),
-  {noreply, State};
+  State1 = #gamestate{
+    host = Host, slug = Slug, time_start = TimeStart,
+    pool_id = PoolId, questions = Questions,
+    seconds = StrSeconds, final_players = Final,
+    delay1 = D1, delay2 = D2, delaybetween = D3,
+    started = Started, maxplayers = MaxPlayers,
+    playersset = PlayersState1,
+    answerrightqueue = RightQueue,
+    answerwrongqueue = WrongQueue,
+    minplayers = MinPlayers},
+  {noreply, State1};
 handle_info(killafter, #gamestate{
     host = Host, slug = Slug, time_start = TimeStart,
     pool_id = PoolId, questions = Questions,
@@ -555,7 +584,7 @@ terminate(Reason, #gamestate{
   Pid = self(),
   ?WARNING_MSG("terminate ~p(~p): ~p", [Pid, Slug, Reason]),
   triviajabber_statistic:delete(Slug),
-  triviajabber_scores:delete(Slug),
+  triviajabber_scores:match_delete({Slug, '_', '_', '_', '_'}),
   recycle_game(Pid, Slug),
   ok.
 
@@ -575,7 +604,7 @@ init([Host, Opts]) ->
 
   Slug = gen_mod:get_opt(slug, Opts, ""),
   triviajabber_statistic:delete(Slug),
-  triviajabber_scores:delete(Slug),
+  triviajabber_scores:match_delete({Slug, '_', '_', '_', '_'}),
 
   MinPlayers = gen_mod:get_opt(minplayers, Opts, 1),
   PoolId = gen_mod:get_opt(pool_id, Opts, 1),
@@ -1022,61 +1051,14 @@ broadcast_msg(Server, Slug, List, Packet) ->
     ejabberd_router:route(From, To, Packet)
   end, List).
 
-onetime_delelement(Slug, Player) ->
-  Fun = fun() ->
-    case mnesia:read(playersstate, Slug) of
-      [] ->
-        ?ERROR_MSG("onetime_delelement: slug ~p is empty", [Slug]);
-      [E] ->
-        Playersets = E#playersstate.playersets,
-        NewSets = sets:del_element(Player, Playersets),
-        mnesia:write(#playersstate{
-            slug = Slug,
-            playersets = NewSets
-        });
-      Ret ->
-        ?ERROR_MSG("onetime_delelement: slug ~p, error ~p", [Slug, Ret])
-    end
-  end,
-  mnesia:transaction(Fun).
-
 %% check one answer for one player
-onetime_answer(Slug, Player) ->
-  Fun = fun() ->
-    case mnesia:read(playersstate, Slug) of
-      [] ->
-        Reset = sets:new(),
-        mnesia:write(#playersstate{
-            slug = Slug,
-            playersets = sets:add_element(Player, Reset)
-        }),
-        true; 
-      [E] ->
-        Playersets = E#playersstate.playersets,
-        case sets:is_element(Player, Playersets) of
-          true ->
-            false;
-          false ->
-            NewSets = sets:add_element(Player, Playersets),
-            mnesia:write(#playersstate{
-              slug = Slug,
-              playersets = NewSets
-            }),
-            true;
-          Ret ->
-            ?WARNING_MSG("sets:is_element(~p) = ~p", [Player, Ret]), 
-            false
-        end;
-      Ret ->
-        ?ERROR_MSG("playersstate keeps ~p", [Ret]),
-        mnesia:write(#playersstate{
-            slug = Slug,
-            playersets = sets:new()
-        }),
-        true
-    end
-  end,
-  mnesia:transaction(Fun).
+onetime_answer(PlayersState, Player) ->
+  case sets:is_element(Player, PlayersState) of
+    true ->
+        PlayersState;
+    false ->
+      sets:add_element(Player, PlayersState)
+  end.
 
 %% how people answered current question
 statistic_answer(Slug, AnswerIdStr) ->
@@ -1111,31 +1093,20 @@ push_right_answer(RightQueue, Player, HitTime) ->
 %% push wrong answer
 push_wrong_answer(WrongQueue, Player, HitTime) ->
   ?INFO_MSG("push_wrong(~p, ~p)", [Player, HitTime]),
-  queue:in({{Player, HitTime}, WrongQueue).
+  queue:in({Player, HitTime}, WrongQueue).
 
 %% pop current answer
-pop_current_answer(Slug, Player) ->
-  Fun = fun() ->
-    case mnesia:read(answer0state, Slug) of
-      [] ->
-        filter_right_queue(Slug, Player);
-      [E] ->
-        Wrong = E#answer0state.wrongqueue,
-        Answer0List = queue:to_list(Wrong),
-        FiltedList = filter_list_answer(Player, Answer0List),
-        if
-          FiltedList == Answer0List ->
-            filter_right_queue(Slug, Player);        
-          true ->
-            NewQueue0 = queue:from_list(FiltedList),
-            mnesia:write(#answer0state{
-                slug = Slug,
-                wrongqueue = NewQueue0
-            })
-        end
-    end
-  end,
-  mnesia:transaction(Fun).
+pop_current_answer(RightQueue, WrongQueue, Player) ->
+  Answer0List = queue:to_list(WrongQueue),
+  FiltedList = filter_list_answer(Player, Answer0List),
+  if
+    FiltedList == Answer0List ->
+      NewRightQueue = filter_right_queue(RightQueue, Answer0List),
+      {NewRightQueue, WrongQueue};
+    true ->
+      NewWrongQueue = queue:from_list(FiltedList),
+      {RightQueue, NewWrongQueue}
+  end.
 
 filter_list_answer(Player, List) ->
   lists:filter(fun({Name, _Hit}) ->
@@ -1145,32 +1116,23 @@ filter_list_answer(Player, List) ->
     end
   end, List).
 
-filter_right_queue(Slug, Player) ->
-  case mnesia:read(answer1state, Slug) of
-    [] ->
-      ok;
-    [E] ->
-      Right = E#answer1state.rightqueue,
-      Answer1List = queue:to_list(Right),
-      FiltedList = filter_list_answer(Player, Answer1List),
-      if
-        FiltedList == Answer1List ->
-          ok;
-        true ->
-          NewQueue1 = queue:from_list(FiltedList),
-          mnesia:write(#answer1state{
-              slug = Slug,
-              rightqueue = NewQueue1
-          })
-      end
+filter_right_queue(RightQueue, Player) ->
+  Answer1List = queue:to_list(RightQueue),
+  FiltedList = filter_list_answer(Player, Answer1List),
+  if
+    FiltedList == Answer1List ->
+      RightQueue;
+    true ->
+      queue:from_list(FiltedList)
   end.
 
 %% result of previous question
-result_previous_question(Final, RightQueue, WrongQueue) ->
+result_previous_question(Slug, Final, RightQueue, WrongQueue) ->
   %% get 2 queues
   PosRanking = positive_scores(RightQueue, Final, [], 1),
   Ranking = negative_scores(WrongQueue, Final, PosRanking, 1),
-  PlayersTag = update_score(Ranking, []),
+  PlayersTag = update_score(Slug, Ranking, []),
+  triviajabber_statistic:delete(Slug),
   PlayersTag.
 
 %% next question will be sent in seconds
@@ -1194,7 +1156,7 @@ finish_game(Server, Slug, _PoolId, _Rank, 1, _Questions,
     LastId > 0 ->
       Last = erlang:integer_to_list(LastId),
       GameCounterStr = "game-" ++ Slug ++ "-" ++ Last,
-      traverse_scoresstate2(Server, GameCounterStr);
+      traverse_scoresstate2(Slug, Server, GameCounterStr);
     true ->
       ?ERROR_MSG("Slug ~p insert row into games table returning ~p", [LastId])
   end;
@@ -1240,7 +1202,7 @@ finish_game(Server, Slug, PoolId, Rank, Step, Questions,
     LastId > 0 ->
       Last = erlang:integer_to_list(LastId),
       GameCounterStr = "game-" ++ Slug ++ "-" ++ Last,
-      traverse_scoresstate2(Server, GameCounterStr);
+      traverse_scoresstate2(Slug, Server, GameCounterStr);
     true ->
       ?ERROR_MSG("Slug ~p insert row into games table returning ~p", [LastId])
   end.
@@ -1253,13 +1215,8 @@ traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers) ->
   {Day, Month, Year} = Date,
   {_, Week} = calendar:iso_week_number({Day,Month,Year}),
   Raddress = "room-" ++ Slug,
-  Iterator =  fun(Rec, [{Max, Total}])->
-    #scoresstate{
-        player = Player,
-        score = Score,
-        hits = Hits,
-        responses = Responses
-    } = Rec,
+  Iterator =  fun(Rec, {Max, Total})->
+    {_, Player, Score, Hits, Responses} = Rec,
     %% redis store_scores
     ?WARNING_MSG("store_scores ~p: ~p, ~p, ~p", [Player, Score, Hits, Responses]),
     RedisData = {Score, Hits, Responses},
@@ -1282,28 +1239,25 @@ traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers) ->
       Score > Max -> Score;
       true -> Max
     end,
-    [{NewMax, Total + Score}]
+    {NewMax, Total + Score}
   end,
 
-  case fold_table(scoresstate, Iterator, [{0, 0}]) of
-    [{WinnerScore, TotalScore}] ->
-      ?WARNING_MSG("triviajabber_games: ~p, ~p, ~p, ~p", [Slug, MaxPlayers, WinnerScore, TotalScore]),
+  case triviajabber_scores:match_object({Slug, '_', '_', '_', '_'}) of
+    List when erlang:is_list(List) ->
+      {WinnerScore, TotalScore} = lists:foldl(Iterator, {0, 0}, List),
+      ?WARNING_MSG("triviajabber_games: ~p, ~p, ~p, ~p",
+          [Slug, MaxPlayers, WinnerScore, TotalScore]),
       mod_triviajabber:games_table(Server, Date, Time, Slug,
           MaxPlayers, WinnerScore, TotalScore);
     Error ->
-      ?ERROR_MSG("interate scoresstate: ~p", [Error]),
+      ?ERROR_MSG("triviajabber_scores:match1: ~p", [Error]),
       -6
   end.
 
 %% store_game
-traverse_scoresstate2(Server, GameCounterStr) ->
+traverse_scoresstate2(Slug, Server, GameCounterStr) ->
   Iterator =  fun(Rec, _) ->
-    #scoresstate{
-        player = Player,
-        score = Score,
-        hits = Hits,
-        responses = Responses
-    } = Rec,
+    {Player, Score, Hits, Responses} = Rec,
     RedisData = {Score, Hits, Responses},
     case RedisData of
       {0, 0, 0} ->
@@ -1313,7 +1267,12 @@ traverse_scoresstate2(Server, GameCounterStr) ->
     end,
     []
   end,
-  fold_table(scoresstate, Iterator, []).
+  case triviajabber_scores:match_object({Slug, '_', '_', '_', '_'}) of
+    List when erlang:is_list(List) ->
+      lists:foldl(Iterator, [], List);
+    Error ->
+      ?ERROR_MSG("triviajabber_scores:match2 ~p", [Error])
+  end.
 
 recycle_game(Pid, Slug) ->
   player_store:match_delete({Slug, '_', '_', '_', '_', '_'}),
@@ -1534,9 +1493,9 @@ negative_scores(Queue, Final, Ret, Position) ->
       Ret
   end.
 
-update_score([], Ret) ->
+update_score(_, [], Ret) ->
   Ret;
-update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
+update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
   {Gap, Response} = if
     Score > 0 ->
       {1, 1}; %% one hit, one response
@@ -1545,37 +1504,24 @@ update_score([{Player, Time, Score, Pos}|Tail], Ret) ->
     true ->
       {0, 0} %% no hit, no response
   end,
-  case mnesia:dirty_read(scoresstate, Player) of
+  case triviajabber_scores:match_object({Slug, Player, '_', '_', '_'}) of
     [] ->
-      ?ERROR_MSG("Dont find ~p in scoresstate", [Player]),
-      mnesia:dirty_write(#scoresstate{
-        player = Player,
-        score = Score, hits = Gap,
-        responses = Response
-      }),
-      update_score(Tail, Ret);
-    [E] ->
+      triviajabber_scores:insert(Slug, Player, Score, Gap, Response),
+      update_score(Slug, Tail, Ret);
+    [{_, _, OldScores, OldHits, OldResponses}] ->
+      triviajabber_scores:match_delete({Slug, Player, '_', '_', '_'}),
       GameScore = if %% only show positive score
-        E#scoresstate.score + Score > 0 ->
-          E#scoresstate.score + Score;
+        OldScores + Score > 0 ->
+          OldScores + Score;
         true ->
           0
       end,
-      NewHit = E#scoresstate.hits + Gap,
-      NewRes = E#scoresstate.responses + Response,
-      mnesia:dirty_write(#scoresstate{
-        player = Player,
-        score = GameScore, hits = NewHit,
-        responses = NewRes
-      }),
-      ?WARNING_MSG("update_score(~p, ~p, hit:~p, res:~p) = ~p",
-          [Player, Score, NewHit, NewRes, GameScore]),
-      AddTag = questionranking_player_tag(
-          Player, Time, Pos, Score),
-      update_score(Tail, [AddTag|Ret]);
+      NewHit = OldHits + Gap,
+      NewRes = OldResponses + Response,
+      triviajabber_scores:insert(Slug, Player, GameScore, NewHit, NewRes);
     Ret ->
       ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Ret]),
-      update_score(Tail, Ret)
+      update_score(Slug, Tail, Ret)
   end.
 
 %% get all players from player_store,
@@ -1634,16 +1580,6 @@ find_answer([Head|Tail], Asw) ->
       CountStr;
     _ ->
       find_answer(Tail, Asw)
-  end.
-
-%% iterate TableName
-fold_table(TableName, Iterator, Acc) ->
-  case mnesia:is_transaction() of
-    true ->
-      mnesia:foldl(Iterator, Acc, TableName);
-    false ->
-      Exec = fun({Fun,Tab}) -> mnesia:foldl(Fun, Acc, Tab) end,
-      mnesia:activity(transaction,Exec,[{Iterator, TableName}],mnesia_frag)
   end.
 
 %% redis_store_scores

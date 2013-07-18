@@ -669,9 +669,8 @@ add_games(GameService, Group, G, Ret) ->
       Ret
   end.
 
-game_items(Items, GameService) ->
+game_items(Items, _GameService) ->
   lists:map(fun({Name, Questions, Slug, Topic}) ->
-    Jid = Slug ++ "@" ++ GameService,
     PlayersList = player_store:match_object({Slug, '_', '_', '_', '_', '_'}),
     PlayersCount = erlang:length(PlayersList),
     case triviajabber_game:current_question(Slug) of
