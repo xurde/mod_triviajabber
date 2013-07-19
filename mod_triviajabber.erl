@@ -561,6 +561,7 @@ execute_command(?FIFTY_NODE, From, SixClicks, _Options,
     #jid{luser = GameId, lserver = SlugNode} ->
       Player = From#jid.user,
       Resource = From#jid.resource,
+      ?INFO_MSG("FIFTY ~p: ~p/~p", [SixClicks, Player, Resource]),
       case triviajabber_game:lifeline_fifty(GameId, Player, Resource) of
         {failed, Slug, Title} ->
           {[{"return", "false"}, {"desc", Slug}], Title};
@@ -573,6 +574,7 @@ execute_command(?FIFTY_NODE, From, SixClicks, _Options,
           {[{"return", "false"}, {"desc", "null"}], "lifeline_fifty has bug"}
       end;
     _ ->
+      ?INFO_MSG("FIFTY wrong jid ~p", [SixClicks]),
       {[{"return", "false"}, {"desc", SlugNode}], "sent to wrong jid"}
   end;
 %% "lifeline:clairvoyance" command

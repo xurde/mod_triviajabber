@@ -130,9 +130,8 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
     answerrightqueue = RightQueue,
     answerwrongqueue = WrongQueue,
     minplayers = MinPlayers} = State) ->
-  case onetime_answer(PlayersState, Player) of
-    {atomic, true} ->
-% using questionstate
+  case sets:is_element(Player, PlayersState) of
+    false ->
       case triviajabber_question:match_object(
           {self(), '_', '_', QuestionId, '_', '_', '_', '_', '_', '_'}) of
         [{_Pid, _Question, Answer, QuestionId, Stamp1, _, _, _, _, _}] ->
@@ -147,18 +146,19 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               {HitTimeY, reset} ->
                 ?WARNING_MSG("(RR) right answer. hittime ~p",
                     [HitTimeY]),
-                PlayersState1 = sets:del_element(Player, PlayersState),
+                PlayersStatea = sets:del_element(Player, PlayersState),
                 %% push into true queue
                 NewRight1 = push_right_answer(RightQueue, Player, HitTimeY),
                 statistic_answer(Slug, Answer),
-                {NewRight1, PlayersState1};
+                {NewRight1, PlayersStatea};
               {HitTimeX, no} ->
                 ?WARNING_MSG("(RN) right answer. hittime ~p",
                     [HitTimeX]),
+                PlayersStateb = sets:add_element(Player, PlayersState),
                 %% push into true queue
                 NewRight2 = push_right_answer(RightQueue, Player, HitTimeX),
                 statistic_answer(Slug, Answer),
-                {NewRight2, PlayersState}
+                {NewRight2, PlayersStateb}
             end,
           State1 = #gamestate{
               host = Host, slug = Slug, time_start = TimeStart,
@@ -176,26 +176,27 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
             case reasonable_hittime(Stamp0, ClientTime, StrSeconds) of
               "toolate" ->
                 ?ERROR_MSG("late to give right answer", []),
-                {RightQueue, PlayersState};
+                {WrongQueue, PlayersState};
               "error" ->
                 ?ERROR_MSG("reasonable_hittime2 ERROR", []),
-                {RightQueue, PlayersState};
+                {WrongQueue, PlayersState};
               {HitTime0X, reset} ->
                 ?WARNING_MSG("(WR) wrong answer. Correct: ~p. hittime ~p",
                     [A1, HitTime0X]),
-                PlayersSet2 = sets:del_element(Player, PlayersState),
+                PlayersSetd = sets:del_element(Player, PlayersState),
                 %% push into wrong queue
                 NewWrong1 = push_wrong_answer(WrongQueue, Player, HitTime0X),
                 statistic_answer(Slug, Answer),
-                {NewWrong1, PlayersSet2};
+                {NewWrong1, PlayersSetd};
               {HitTime0Y, no} ->
-              ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
-                  [A1, HitTime0Y]),
-              %% push into wrong queue
-              NewWrong2 = push_wrong_answer(WrongQueue, Player, HitTime0Y),
-              statistic_answer(Slug, Answer),
-              {NewWrong2, PlayersState}
-          end,
+                ?WARNING_MSG("(WN) wrong answer. Correct: ~p. hittime ~p",
+                    [A1, HitTime0Y]),
+                PlayersStatec = sets:add_element(Player, PlayersState),
+                %% push into wrong queue
+                NewWrong2 = push_wrong_answer(WrongQueue, Player, HitTime0Y),
+                statistic_answer(Slug, Answer),
+                {NewWrong2, PlayersStatec}
+            end,
           State2 = #gamestate{
               host = Host, slug = Slug, time_start = TimeStart,
               questions = Questions, seconds = StrSeconds,
@@ -226,7 +227,7 @@ handle_cast({answer, Player, Answer, QuestionId, ClientTime}, #gamestate{
               [Player, Ret]),
           {noreply, State}
       end;
-    {atomic, false} ->
+    true ->
       ?WARNING_MSG("~p answered, slug ~p doesnt handle more",
           [Player, Slug]),
       {noreply, State};
@@ -244,7 +245,7 @@ handle_cast({rollback, Player}, #gamestate{
     playersset = PlayersState,
     answerrightqueue = RightQueue,
     answerwrongqueue = WrongQueue,
-    minplayers = MinPlayers} = State) ->
+    minplayers = MinPlayers}) ->
   %% remove from queue
   PlayersState1 = sets:del_element(Player, PlayersState),
   {RightQueue1, WrongQueue1} = pop_current_answer(RightQueue, WrongQueue, Player),
@@ -516,10 +517,10 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
     seconds = StrSeconds, final_players = Final,
     delay1 = D1, delay2 = D2, delaybetween = D3,
     started = Started, maxplayers = MaxPlayers,
-    playersset = PlayersState,
+    playersset = _PlayersState,
     answerrightqueue = RightQueue,
     answerwrongqueue = WrongQueue,
-    minplayers = MinPlayers} = State) ->
+    minplayers = MinPlayers}) ->
   MsgId = Slug ++ randoms:get_string(),
   QLstLen = erlang:length(QLst),
   {OptList, RevertOpts} = generate_opt_list(QLst, [], [], QLstLen),
@@ -557,7 +558,7 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
 handle_info(killafter, #gamestate{
     host = Host, slug = Slug, time_start = TimeStart,
     pool_id = PoolId, questions = Questions,
-    seconds = _StrSeconds, final_players = Final,
+    seconds = _StrSeconds, final_players = _Final,
     delay1 = _D1, delay2 = _D2, delaybetween = _D3,
     started = Started, maxplayers = MaxPlayers,
     playersset = _PlayersState,
@@ -578,9 +579,9 @@ handle_info(_Info, State) ->
   {noreply, State}.
 
 terminate(Reason, #gamestate{
-      slug = Slug, playersset = PlayersState,
-      answerrightqueue = RightQueue,
-      answerwrongqueue = WrongQueue}) ->
+      slug = Slug, playersset = _PlayersState,
+      answerrightqueue = _RightQueue,
+      answerwrongqueue = _WrongQueue}) ->
   Pid = self(),
   ?WARNING_MSG("terminate ~p(~p): ~p", [Pid, Slug, Reason]),
   triviajabber_statistic:delete(Slug),
@@ -1019,7 +1020,7 @@ send_question(Server, Delays, Rank, Questions, Slug,
       erlang:send_after(Delay1, self(),
           {rankingquestion, List, RankingQuestion}),
       
-      RGame = update_scoreboard(List, []),
+      RGame = update_scoreboard(Slug, List, []),
       SortScoreboard = scoreboard_items(RGame, []),
       ?WARNING_MSG("scoreboard_items ~p", [SortScoreboard]),
       MsgGId = "ranking-game" ++ Random,
@@ -1051,27 +1052,20 @@ broadcast_msg(Server, Slug, List, Packet) ->
     ejabberd_router:route(From, To, Packet)
   end, List).
 
-%% check one answer for one player
-onetime_answer(PlayersState, Player) ->
-  case sets:is_element(Player, PlayersState) of
-    true ->
-        PlayersState;
-    false ->
-      sets:add_element(Player, PlayersState)
-  end.
-
 %% how people answered current question
 statistic_answer(Slug, AnswerIdStr) ->
   {Opt1, Opt2, Opt3, Opt4} = case triviajabber_statistic:lookup(Slug) of
     {ok, O1, O2, O3, O4} ->
       {O1, O2, O3, O4};
     Any ->
-      ?WARNING_MSG("triviajabber_statistic(~p)", [Slug]),
+      ?WARNING_MSG("triviajabber_statistic(~p): ~p", [Slug, Any]),
       {0, 0, 0, 0}
   end,
   {U1, U2, U3, U4} = statistic_update(AnswerIdStr,
     Opt1, Opt2, Opt3, Opt4),
-  triviajabber_statistic:insert(Slug, Opt1, Opt2, Opt3, Opt4).
+  ?INFO_MSG("triviajabber_statistic(~p) insert {~p, ~p, ~p, ~p}",
+      [Slug, U1, U2, U3, U4]),
+  triviajabber_statistic:insert(Slug, U1, U2, U3, U4).
 
 statistic_update("1", Opt1, Opt2, Opt3, Opt4) ->
   {Opt1+1, Opt2, Opt3, Opt4};
@@ -1183,7 +1177,7 @@ finish_game(Server, Slug, PoolId, Rank, Step, Questions,
   %% then broadcast result previous question
   broadcast_msg(Server, Slug, List, RankingQuestion),
   MsgGId = "ranking-game" ++ Random,
-  RGame = update_scoreboard(List, []),
+  RGame = update_scoreboard(Slug, List, []),
   SortScoreboard = scoreboard_items(RGame, []),
   ?WARNING_MSG("scoreboard_items0 ~p", [SortScoreboard]),
   RankingGame = {xmlelement, "message",
@@ -1257,7 +1251,7 @@ traverse_scoresstate1(Server, TimeStart, Slug, MaxPlayers) ->
 %% store_game
 traverse_scoresstate2(Slug, Server, GameCounterStr) ->
   Iterator =  fun(Rec, _) ->
-    {Player, Score, Hits, Responses} = Rec,
+    {_, Player, Score, Hits, Responses} = Rec,
     RedisData = {Score, Hits, Responses},
     case RedisData of
       {0, 0, 0} ->
@@ -1518,7 +1512,12 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
       end,
       NewHit = OldHits + Gap,
       NewRes = OldResponses + Response,
-      triviajabber_scores:insert(Slug, Player, GameScore, NewHit, NewRes);
+      triviajabber_scores:insert(Slug, Player, GameScore, NewHit, NewRes),
+      ?WARNING_MSG("update_score(~p, ~p, hit:~p, res:~p) = ~p",
+          [Player, Score, NewHit, NewRes, GameScore]),
+      AddTag = questionranking_player_tag(
+          Player, Time, Pos, Score),
+      update_score(Slug, Tail, [AddTag|Ret]);
     Ret ->
       ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Ret]),
       update_score(Slug, Tail, Ret)
@@ -1527,24 +1526,23 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
 %% get all players from player_store,
 %% we reset playersstate, player can answer new question.
 %% So we cant get all players by playersstate.playersets
-update_scoreboard([], Ret) ->
+update_scoreboard(_Slug, [], Ret) ->
   lists:keysort(2, Ret);
-update_scoreboard([Head|Tail], Acc) ->
+update_scoreboard(Slug, [Head|Tail], Acc) ->
   {_Slug, Player, _Resource, _, _, _} = Head,
-  Add = case mnesia:dirty_read(scoresstate, Player) of
+  Add = case triviajabber_scores:match_object({Slug, Player, '_', '_', '_'}) of
     [] ->
-      ?WARNING_MSG("dirty_read(scoresstate): didnt see ~p",
+      ?WARNING_MSG("triviajabber_scores didnt see ~p",
           [Player]),
       {Player, 0};
-    [E2] ->
-      Score = E2#scoresstate.score,
+    [{_, _, Score, _Hit, _Res}] ->
       {Player, Score};
     Ret2 ->
-      ?ERROR_MSG("dirty_read(scoresstate): ~p", [Ret2]),
+      ?ERROR_MSG("triviajabber_scores(~p): ~p", [Player, Ret2]),
       {Player, 0}
   end,
   ?WARNING_MSG("get_scoreboard : add ~p", [Add]),
-  update_scoreboard(Tail, [Add|Acc]).
+  update_scoreboard(Slug, Tail, [Add|Acc]).
 
 questionranking_player_tag(Nickname, Time, Pos, Score) ->
   {xmlelement, "player",
