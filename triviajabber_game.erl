@@ -347,6 +347,23 @@ handle_call(stop, _From, State) ->
   ?WARNING_MSG("Stopping manager ...~nState:~p~n", [State]),
   {stop, normal, State}.
 
+handle_info({sendstatusdelay, Packet}, #gamestate{
+    host = Host, slug = Slug, time_start = _TimeStart,
+    questions = _Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
+    started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
+    playersset = _PlayersState,
+    answerrightqueue = _RightQueue,
+    answerwrongqueue = _WrongQueue,
+    minplayers = _MinPlayers} = State) ->
+  List = mod_triviajabber:get_room_occupants(Host, Slug),
+  lists:foreach(fun(To) ->
+    GameServer = "triviajabber." ++ Host,
+    From = jlib:make_jid(Slug, GameServer, Slug),
+    ejabberd_router:route(From, To, Packet)
+  end, List),
+  {noreply, State};
 handle_info({specialone, Player, Resource}, #gamestate{
     host = Host, slug = Slug, time_start = _TimeStart,
     questions = _Questions, seconds = StrSeconds,
@@ -450,7 +467,7 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
           TimeStart, MaxPlayers),
       {stop, normal, State};
     [{LastQuestion}] ->
-      send_status(Host, Slug, Final, Questions, Step),
+      send_status_delay(D1 + D2 + 1000, Final, Questions, Step),
       Delays0 = {D1, D2, D3},
       Rank1 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays0, Rank1, Questions,
@@ -468,7 +485,7 @@ handle_info({questionslist, QuestionIds, Step}, #gamestate{
         minplayers = MinPlayers},
       {noreply, State1};
     [{Head}|Tail] ->
-      send_status(Host, Slug, Final, Questions, Step),
+      send_status_delay(D1 + D2 + 1000, Final, Questions, Step),
       Delays1 = {D1, D2, D3},
       Rank2 = result_previous_question(Slug, Final, RightQueue, WrongQueue),
       send_question(Host, Delays1, Rank2, Questions,
@@ -924,11 +941,28 @@ send_status(Server, Slug, Final, Questions, Step) ->
        }
       ]
   },
+  ?WARNING_MSG("@@@@@ send_status(~p, ~p)", [Slug, Step]),
   lists:foreach(fun(To) ->
     GameServer = "triviajabber." ++ Server,
     From = jlib:make_jid(Slug, GameServer, Slug),
     ejabberd_router:route(From, To, Packet)
   end, List).
+%% delay status after ranking, before new question
+send_status_delay(Delays, Final, Questions, Step) ->
+  MsgId = "status-game" ++ randoms:get_string(),
+  WhichQuestion = erlang:integer_to_list(Step),
+  Players = erlang:integer_to_list(Final),
+  Packet = {xmlelement, "message",
+      [{"type", "status"}, {"id", MsgId}],
+      [{xmlelement, "status",
+          [{"question", WhichQuestion},
+           {"total", Questions},
+           {"players", Players}],
+          []
+       }
+      ]
+  },
+  erlang:send_after(Delays, self(), {sendstatusdelay, Packet}).
 
 %% send first question
 %% TODO ? add delay ?
