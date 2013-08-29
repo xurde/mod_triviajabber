@@ -757,7 +757,6 @@ get_answer_hittime(AnswerTag) ->
 %% get all participants in MUC
 get_room_occupants(Server, RoomName) ->
     MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
-    ?WARNING_MSG("RoomName ~p, MucService ~p", [RoomName, MucService]),
     StateData = get_room_state(Server, RoomName),
     [U#user.jid
      || {_, U} <- ?DICT:to_list(StateData#state.users)].

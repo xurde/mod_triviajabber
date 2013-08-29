@@ -600,7 +600,7 @@ terminate(Reason, #gamestate{
       answerrightqueue = _RightQueue,
       answerwrongqueue = _WrongQueue}) ->
   Pid = self(),
-  ?WARNING_MSG("terminate ~p(~p): ~p", [Pid, Slug, Reason]),
+  ?WARNING_MSG("terminate ~p(~p):\n~p", [Pid, Slug, Reason]),
   triviajabber_statistic:delete(Slug),
   triviajabber_scores:match_delete({Slug, '_', '_', '_', '_'}),
   recycle_game(Pid, Slug),
@@ -1159,7 +1159,9 @@ result_previous_question(Slug, Final, RightQueue, WrongQueue) ->
   %% get 2 queues
   PosRanking = positive_scores(RightQueue, Final, [], 1),
   Ranking = negative_scores(WrongQueue, Final, PosRanking, 1),
+  ?INFO_MSG("ranking: ~p", [Ranking]),
   PlayersTag = update_score(Slug, Ranking, []),
+  ?INFO_MSG("playerstag: ~p", [PlayersTag]),
   triviajabber_statistic:delete(Slug),
   PlayersTag.
 
@@ -1532,6 +1534,7 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
     true ->
       {0, 0} %% no hit, no response
   end,
+  ?INFO_MSG("update_score(~p, ~p, ~p, ~p)", [Player, Time, Score, Pos]),
   case triviajabber_scores:match_object({Slug, Player, '_', '_', '_'}) of
     [] ->
       triviajabber_scores:insert(Slug, Player, Score, Gap, Response),
@@ -1552,8 +1555,27 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
       AddTag = questionranking_player_tag(
           Player, Time, Pos, Score),
       update_score(Slug, Tail, [AddTag|Ret]);
-    Ret ->
-      ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Ret]),
+    List when erlang:is_list(List) ->
+      ?WARNING_MSG("Many ~p in scoresstate: ~p", [Player, List]),
+      {SumScores, SumHits, SumResponses} =
+          sameplayers(List, {0, 0, 0}),
+      triviajabber_scores:match_delete({Slug, Player, '_', '_', '_'}),
+      GameScore2 = if %% only show positive score
+        SumScores + Score > 0 ->
+          SumScores + Score;
+        true ->
+          0
+      end,
+      NewHit2 = SumHits + Gap,
+      NewRes2 = SumResponses + Response,
+      triviajabber_scores:insert(Slug, Player, GameScore2, NewHit2, NewRes2),
+      ?WARNING_MSG("update_score2(~p, ~p, hit:~p, res:~p) = ~p",
+          [Player, Score, NewHit2, NewRes2, GameScore2]),
+      AddTag2 = questionranking_player_tag(
+          Player, Time, Pos, Score),
+      update_score(Slug, Tail, [AddTag2|Ret]);
+    Other ->
+      ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Other]),
       update_score(Slug, Tail, Ret)
   end.
 
@@ -1613,6 +1635,15 @@ find_answer([Head|Tail], Asw) ->
     _ ->
       find_answer(Tail, Asw)
   end.
+
+%% if someone went out and joined again, server doesn't recognize immediately.
+%% So there are many same players in triviajabber_scores, we count as one player.
+sameplayers([], {Scores, Hits, Responses}) ->
+  {Scores, Hits, Responses};
+sameplayers([Head|Tail], {Scores, Hits, Responses}) ->
+  {_, _, OneScore, OneHit, OneResponse} = Head,
+  sameplayers(Tail, {Scores + OneScore,
+      Hits + OneHit, Responses + OneResponse}).
 
 %% redis_store_scores
 redis_store_scores_alltime(Server, Alltime, Player, RedisData) ->
