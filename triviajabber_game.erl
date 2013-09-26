@@ -17,7 +17,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 %% helpers
--export([take_new_player/9, remove_old_player/1,
+-export([take_new_player/9, refresh_player/9,
+         remove_old_player/1,
          current_question/1, get_answer/5,
          current_status/1, get_question_fifty/2,
          lifeline_fifty/3,
@@ -31,7 +32,7 @@
 -define(PROCNAME, ejabberd_triviapad_game).
 -define(DEFAULT_MINPLAYERS, 1).
 -define(READY, "no").
--define(KILLAFTER, 2000).
+%%-define(KILLAFTER, 2000).
 -define(DELAYNEXT1, 1500).
 -define(DELAYNEXT2, 3000).
 -define(REASONABLE, 5000).
@@ -260,6 +261,8 @@ handle_cast({rollback, Player}, #gamestate{
     answerwrongqueue = WrongQueue1,
     minplayers = MinPlayers},
   {noreply, State1};
+handle_cast(stop, State) ->
+  {stop, normal, State};
 handle_cast(Msg, State) ->
   ?WARNING_MSG("async msg: ~p\nstate ~p", [Msg, State]),
   {noreply, State}.
@@ -572,26 +575,6 @@ handle_info({nextquestion, QLst, Qst, Step, Asw}, #gamestate{
     answerwrongqueue = WrongQueue,
     minplayers = MinPlayers},
   {noreply, State1};
-handle_info(killafter, #gamestate{
-    host = Host, slug = Slug, time_start = TimeStart,
-    pool_id = PoolId, questions = Questions,
-    seconds = _StrSeconds, final_players = _Final,
-    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
-    started = Started, maxplayers = MaxPlayers,
-    playersset = _PlayersState,
-    answerrightqueue = _RightQueue,
-    answerwrongqueue = _WrongQueue,
-    minplayers = _MinPlayers} = State) ->
-  if
-    Started =:= "yes", Questions > 0 ->
-      finish_game(Host, Slug, PoolId, nodefined, 1, Questions,
-          TimeStart, MaxPlayers);
-    true ->
-      %% Don't update Redis when game hasn't been started
-      ok
-  end,
-%%  recycle_game(self(), Slug),
-  {stop, normal, State};
 handle_info(_Info, State) ->
   {noreply, State}.
 
@@ -672,7 +655,7 @@ take_new_player(Host, Slug, PoolId, Player, Resource,
     Questions, Seconds, MinPlayers, DelayComplex) ->
   case triviajabber_store:lookup(Slug) of
     {ok, Slug, PoolId, Pid} ->
-      ?WARNING_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
+      ?INFO_MSG("B. <notify> process ~p: someone joined  ~p", [Pid, Slug]),
       gen_server:cast(Pid, {joined, Slug, PoolId, Player}),
       ok;
     {null, not_found} ->
@@ -683,13 +666,38 @@ take_new_player(Host, Slug, PoolId, Player, Resource,
               {minplayers, MinPlayers}, {delay1, Delay1},
               {delay2, Delay2}, {delaybetween, Delayb}],
       {ok, Pid} = start_link(Host, Opts),
-      ?WARNING_MSG("C. new process ~p handles ~p", [Pid, Opts]),
+      ?INFO_MSG("C. new process ~p handles ~p", [Pid, Opts]),
       triviajabber_store:insert(Slug, PoolId, Pid),
       ok;
     {error, Any} ->
       ?ERROR_MSG("D. [player joined] lookup : ~p", [Any]);
     Error ->
       ?ERROR_MSG("E. [player joined] lookup : ~p", [Error])  
+  end.
+%% Player disconnected. Player has connected again to continue game.
+refresh_player(Host, Slug, PoolId, Player, Resource,
+    Questions, Seconds, MinPlayers, DelayComplex) ->
+  case triviajabber_store:lookup(Slug) of
+    {ok, Slug, PoolId, Pid} ->
+      ?WARNING_MSG("B2. process ~p: someone continues ~p", [Pid, Slug]),
+      ok;
+    {null, not_found} ->
+    %% bad case: after reconnect, game has terminated.
+    %% you start over the game.
+      {Delay1, Delay2, Delayb} = DelayComplex,
+      Opts = [{slug, Slug}, {pool_id, PoolId},
+              {questions, Questions}, {seconds, Seconds},
+              {player, Player}, {resource, Resource},
+              {minplayers, MinPlayers}, {delay1, Delay1},
+              {delay2, Delay2}, {delaybetween, Delayb}],
+      {ok, Pid} = start_link(Host, Opts),
+      ?INFO_MSG("C2. new process ~p handles ~p", [Pid, Opts]),
+      triviajabber_store:insert(Slug, PoolId, Pid),
+      ok;
+    {error, Any} ->
+      ?ERROR_MSG("D2. [player joined] lookup : ~p", [Any]);
+    Error ->
+      ?ERROR_MSG("E2. [player joined] lookup : ~p", [Error])
   end.
 %% Old player joined game room (slug),
 %% After he requested, he has left.
@@ -698,9 +706,9 @@ remove_old_player(Slug) ->
     {ok, Slug, _PoolId, Pid} ->
       case player_store:match_object({Slug, '_', '_', '_', '_', '_'}) of
         [] ->
-          ?WARNING_MSG("manager ~p kills idle process ~p", [self(), Pid]),
+          ?WARNING_MSG("idle process ~p", [Pid]);
           %% kill empty slug in 1500 miliseconds
-          erlang:send_after(?KILLAFTER, Pid, killafter);
+          %%erlang:send_after(?KILLAFTER, Pid, killafter);
         Res ->
           ?WARNING_MSG("sync notify ~p", [Res]),
           gen_server:cast(Pid, {left, Slug})

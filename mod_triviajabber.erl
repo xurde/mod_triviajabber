@@ -468,9 +468,12 @@ execute_command(?JOIN_EVENT_NODE, From, SixClicks, _Options,
           %% then cache in player_store
           case check_player_in_game(Server, MinPlayers, GameId,
               GamePool, GameQuestions, GameSeconds, Player, Resource) of
-            "ok" ->
+            ok ->
               player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
               {[{"return", "true"}, {"desc", GameName}], "Found game to join"};
+            refresh ->
+              player_store:insert(GameId, Player, Resource, Fifty, Clair, Rollback),
+              {[{"return", "true"}, {"desc", GameName}], "Continue game"};
             Err ->
               ?WARNING_MSG("You have joined this game ~p", [Err]),
               {[{"return", "fail"}, {"desc", GameName}], "You have joined this game"}
@@ -720,10 +723,19 @@ check_player_in_game(Server, MinPlayers, GameId,
       triviajabber_game:take_new_player(Server, GameId, GamePool,
           Player, Resource, GameQuestions, GameSeconds,
           MinPlayers, {Delay1, Delay2, Delayb}),
-      "ok";
+      ok;
+    [{GameId, Player, XResource, XFifty, XClair, XRollback}] ->
+      Delay21 = gen_mod:get_module_opt(Server, ?MODULE, delay1, 5000),
+      Delay22 = gen_mod:get_module_opt(Server, ?MODULE, delay2, 5000),
+      Delay2b = gen_mod:get_module_opt(Server, ?MODULE, delaybetween, 5000),
+      player_store:match_delete({GameId, Player, XResource, XFifty, XClair, XRollback}),
+      triviajabber_game:refresh_player(Server, GameId, GamePool,
+          Player, Resource, GameQuestions, GameSeconds,
+          MinPlayers, {Delay21, Delay22, Delay2b}),
+      refresh;
     Res ->
       ?WARNING_MSG("find ~p, but see unexpected ~p", [Player, Res]),
-      "joined"
+      joined
   end.
 %% Check if this player at this resouce has joined game room.
 check_player_joined_game(GameId, Player, Resource) ->
@@ -756,7 +768,6 @@ get_answer_hittime(AnswerTag) ->
 
 %% get all participants in MUC
 get_room_occupants(Server, RoomName) ->
-    MucService = ?DEFAULT_ROOM_SERVICE ++ Server,
     StateData = get_room_state(Server, RoomName),
     [U#user.jid
      || {_, U} <- ?DICT:to_list(StateData#state.users)].

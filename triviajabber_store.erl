@@ -34,4 +34,3 @@ lookup(Slug) ->
 
 delete(Slug) ->
   ets:delete(?MODULE, Slug).
-
