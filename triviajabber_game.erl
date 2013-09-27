@@ -1061,9 +1061,9 @@ send_question(Server, Delays, Rank, Questions, Slug,
       %% delay to return rankingquestion
       erlang:send_after(Delay1, self(),
           {rankingquestion, List, RankingQuestion}),
-      
       RGame = update_scoreboard(Slug, List, []),
-      SortScoreboard = scoreboard_items(RGame, []),
+      MaxPos = erlang:length(List),
+      SortScoreboard = scoreboard_items(RGame, [], MaxPos),
       ?WARNING_MSG("scoreboard_items ~p", [SortScoreboard]),
       MsgGId = "ranking-game" ++ Random,
       RankingGame = {xmlelement, "message",
@@ -1165,10 +1165,12 @@ filter_right_queue(RightQueue, Player) ->
 %% result of previous question
 result_previous_question(Slug, Final, RightQueue, WrongQueue) ->
   %% get 2 queues
-  PosRanking = positive_scores(RightQueue, Final, [], 1),
-  Ranking = negative_scores(WrongQueue, Final, PosRanking, 1),
-  ?INFO_MSG("ranking: ~p", [Ranking]),
-  PlayersTag = update_score(Slug, Ranking, []),
+  {Plus, PosRanking} = positive_scores(RightQueue, Final, [], 1),
+  {Minus, NegRanking} = negative_scores(WrongQueue, Final, [], 1),
+  ?INFO_MSG("minus = ~p, ranking: ~p", [Minus, NegRanking]),
+  Ranking = prepend_scores(PosRanking, NegRanking),
+  %?INFO_MSG("plus = ~p, minus = ~p \n ranking: ~p", [Plus, Minus, Ranking]),
+  PlayersTag = update_score(Slug, Ranking, [], Plus+Minus),
   ?INFO_MSG("playerstag: ~p", [PlayersTag]),
   triviajabber_statistic:delete(Slug),
   PlayersTag.
@@ -1222,7 +1224,8 @@ finish_game(Server, Slug, PoolId, Rank, Step, Questions,
   broadcast_msg(Server, Slug, List, RankingQuestion),
   MsgGId = "ranking-game" ++ Random,
   RGame = update_scoreboard(Slug, List, []),
-  SortScoreboard = scoreboard_items(RGame, []),
+  MaxPos = erlang:length(List),
+  SortScoreboard = scoreboard_items(RGame, [], MaxPos),
   ?WARNING_MSG("scoreboard_items0 ~p", [SortScoreboard]),
   RankingGame = {xmlelement, "message",
       [{"type", "ranking"}, {"id", MsgGId}],
@@ -1502,38 +1505,37 @@ reasonable_hittime(ServerStamp, ClientTime, StrSeconds) ->
 positive_scores(Queue, Final, Ret, Position) ->
   case queue:is_empty(Queue) of
     true ->
-      Ret;
+      {Position-1, Ret};
     false ->
       Score = Final / Position,
       {{value, {Player, HitTime}}, Tail} = queue:out(Queue),
-      Add = {Player,
-          HitTime,
-          erlang:round(Score),
-          Position},
+      Add = {Player, HitTime, erlang:round(Score)},
       positive_scores(Tail, Final, [Add|Ret], Position+1);
     _ ->
-      Ret
+      {Position-1, Ret}
   end.
 
 negative_scores(Queue, Final, Ret, Position) ->
   case queue:is_empty(Queue) of
     true ->
-      Ret;
+      {Position-1, Ret};
     false ->
       Score = Final / (Position * -2),
       {{value, {Player, HitTime}}, Tail} = queue:out(Queue),
-      Add = {Player,
-          HitTime,
-          erlang:round(Score),
-          Position},
+      Add = {Player, HitTime, erlang:round(Score)},
       negative_scores(Tail, Final, [Add|Ret], Position+1);
     _ ->
-      Ret
+      {Position-1, Ret}
   end.
 
-update_score(_, [], Ret) ->
+prepend_scores(MergeRanking, []) ->
+  MergeRanking;
+prepend_scores(PosRanking, [Head|Tails]) ->
+  prepend_scores([Head|PosRanking], Tails).
+
+update_score(_, [], Ret, _) ->
   Ret;
-update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
+update_score(Slug, [{Player, Time, Score}|Tail], Ret, DecPos) ->
   {Gap, Response} = if
     Score > 0 ->
       {1, 1}; %% one hit, one response
@@ -1542,11 +1544,11 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
     true ->
       {0, 0} %% no hit, no response
   end,
-  ?INFO_MSG("update_score(~p, ~p, ~p, ~p)", [Player, Time, Score, Pos]),
+  ?INFO_MSG("update_score(~p, ~p, ~p, ~p)", [Player, Time, Score, DecPos]),
   case triviajabber_scores:match_object({Slug, Player, '_', '_', '_'}) of
     [] ->
       triviajabber_scores:insert(Slug, Player, Score, Gap, Response),
-      update_score(Slug, Tail, Ret);
+      update_score(Slug, Tail, Ret, DecPos);
     [{_, _, OldScores, OldHits, OldResponses}] ->
       triviajabber_scores:match_delete({Slug, Player, '_', '_', '_'}),
       GameScore = if %% only show positive score
@@ -1561,8 +1563,8 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
       ?WARNING_MSG("update_score(~p, ~p, hit:~p, res:~p) = ~p",
           [Player, Score, NewHit, NewRes, GameScore]),
       AddTag = questionranking_player_tag(
-          Player, Time, Pos, Score),
-      update_score(Slug, Tail, [AddTag|Ret]);
+          Player, Time, DecPos, Score),
+      update_score(Slug, Tail, [AddTag|Ret], DecPos-1);
     List when erlang:is_list(List) ->
       ?WARNING_MSG("Many ~p in scoresstate: ~p", [Player, List]),
       {SumScores, SumHits, SumResponses} =
@@ -1580,11 +1582,11 @@ update_score(Slug, [{Player, Time, Score, Pos}|Tail], Ret) ->
       ?WARNING_MSG("update_score2(~p, ~p, hit:~p, res:~p) = ~p",
           [Player, Score, NewHit2, NewRes2, GameScore2]),
       AddTag2 = questionranking_player_tag(
-          Player, Time, Pos, Score),
-      update_score(Slug, Tail, [AddTag2|Ret]);
+          Player, Time, DecPos, Score),
+      update_score(Slug, Tail, [AddTag2|Ret], DecPos-1);
     Other ->
       ?ERROR_MSG("Found ~p in scoresstate: ~p", [Player, Other]),
-      update_score(Slug, Tail, Ret)
+      update_score(Slug, Tail, Ret, DecPos)
   end.
 
 %% get all players from player_store,
@@ -1618,17 +1620,18 @@ questionranking_player_tag(Nickname, Time, Pos, Score) ->
       []
   }.
 
-scoreboard_items([], Ret) ->
+scoreboard_items([], Ret, _) ->
   Ret;
-scoreboard_items([Head|Tail], Ret) ->
+scoreboard_items([Head|Tail], Ret, Pos) ->
   {Player, Score} = Head,
   Add = {xmlelement, "player",
       [{"nickname", Player},
-       {"score", erlang:integer_to_list(Score)}
+       {"score", erlang:integer_to_list(Score)},
+       {"pos", erlang:integer_to_list(Pos)}
       ],
       []
   },
-  scoreboard_items(Tail, [Add|Ret]).
+  scoreboard_items(Tail, [Add|Ret], Pos-1).
 
 %% return answer option id (string)
 find_answer([], _) ->
