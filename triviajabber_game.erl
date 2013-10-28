@@ -389,6 +389,8 @@ handle_info({specialone, Player, Resource}, #gamestate{
   ejabberd_router:route(From, To, CountdownPacket),
   case string:to_integer(StrSeconds) of
     {Seconds, []} ->
+      %% TODO: send zeroscores
+      erlang:send_after((Seconds-5)*1000, self(), zeroscores),
       erlang:send_after(Seconds * 1000, self(), countdown);
     {RetSeconds, Reason} ->
       ?ERROR_MSG("Error0 to convert seconds to integer {~p, ~p}",
@@ -398,6 +400,43 @@ handle_info({specialone, Player, Resource}, #gamestate{
           [Ret])
   end,
   {noreply, State};
+%% TODO: zeroscore before first question
+handle_info(zeroscores, #gamestate{
+    host = Host, slug = Slug, time_start = _TimeStart,
+    questions = Questions, seconds = _StrSeconds,
+    pool_id = _PoolId, final_players = _Final,
+    started = _Started, maxplayers = _MaxPlayers,
+    delay1 = _D1, delay2 = _D2, delaybetween = _D3,
+    playersset = _PlayersState,
+    answerrightqueue = _RightQueue,
+    answerwrongqueue = _WrongQueue,
+    minplayers = _MinPlayers} = State) ->
+    case player_store:match_object({Slug, '_', '_', '_', '_', '_'}) of
+      [] ->
+        ok; %% nothing to do
+      List when erlang:is_list(List) ->
+        CurrentPlayers = current_players(List),
+        RankItems = zeroscores_ranks([], CurrentPlayers),
+        RankingZero = {xmlelement, "message",
+            [{"type", "ranking"}, {"id", "0"}],
+            [{xmlelement, "rank",
+                [{"type", "game"},
+                {"count", "0"},
+                {"total", Questions}],
+            RankItems
+             }
+            ]
+        },
+        lists:foreach(fun({CPlayer, CResource}) ->
+            To = jlib:make_jid(CPlayer, Host, CResource),
+            GameServer = "triviajabber." ++ Host,
+            From = jlib:make_jid(Slug, GameServer, Slug),
+            ejabberd_router:route(From, To, RankingZero)
+        end, CurrentPlayers);
+      Error ->
+        ?ERROR_MSG("zeroscores:match ~p", [Error])
+    end,
+    {noreply, State};
 handle_info(countdown, #gamestate{
     host = Host, slug = Slug, time_start = TimeStart,
     questions = Questions, seconds = StrSeconds,
@@ -925,6 +964,8 @@ will_send_question(Server, Slug, StrSeconds) ->
           ejabberd_router:route(From, To, CountdownPacket)
         end,
       List),
+      %% TODO: send zeroscores
+      erlang:send_after((Seconds-5)*1000, self(), zeroscores),
       erlang:send_after(Seconds * 1000, self(), countdown);
     {RetSeconds, Reason} ->
       ?ERROR_MSG("Error1 to convert seconds to integer {~p, ~p}",
@@ -1646,6 +1687,25 @@ find_answer([Head|Tail], Asw) ->
     _ ->
       find_answer(Tail, Asw)
   end.
+
+%% get all currents players in slug
+current_players(List) ->
+  lists:map(fun(Item) ->
+    {_Slug, Player, Resource, _Fifty, _Clair, _Rollback} = Item,
+    {Player, Resource}
+  end, List).
+
+zeroscores_ranks(ZeroRanks, []) ->
+  ZeroRanks;
+zeroscores_ranks(ZeroRanks, [{Player, _Resource}|Rest]) ->
+  NewRank = {xmlelement, "player",
+      [{"nickname", Player},
+       {"score", "0"}
+      ],
+      []
+  },
+  zeroscores_ranks([NewRank|ZeroRanks], Rest).
+  
 
 %% if someone went out and joined again, server doesn't recognize immediately.
 %% So there are many same players in triviajabber_scores, we count as one player.
